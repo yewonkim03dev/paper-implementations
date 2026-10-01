@@ -1,5 +1,11 @@
-class ScaledDotProductAttention:
+import math
+
+import torch
+from torch import Tensor, nn
+
+
+class ScaledDotProductAttention(nn.Module):
     pass
 
-class MultiheadAttention:
+class MultiHeadAttention(nn.Module):
     pass

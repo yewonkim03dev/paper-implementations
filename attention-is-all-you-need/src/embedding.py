@@ -1,5 +1,11 @@
-class TokenEmbedding:
+import math
+
+import torch
+from torch import nn
+
+
+class TokenEmbedding(nn.Module):
     pass
 
-class PositionalEncoding:
+class PositionalEncoding(nn.Module):
     pass
