@@ -13,7 +13,7 @@ class TokenEmbedding(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, S)
         # return (B, S, D)
-        return self.embedding(x)
+        return self.embedding(x) * math.sqrt(self.d_model)
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
