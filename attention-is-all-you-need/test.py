@@ -2,7 +2,46 @@
 
 import torch
 
-from src.embedding import PositionalEncoding
+from src.embedding import PositionalEncoding, TokenEmbedding
+
+
+def test_token_embedding() -> None:
+    B = 2
+    S = 4
+    D = 16
+    vocab_size = 50
+
+    model = TokenEmbedding(
+        vocab_size=vocab_size,
+        d_model=D,
+    )
+
+    tokens = torch.tensor(
+        [
+            [1, 2, 3, 1],
+            [4, 1, 0, 2],
+        ],
+        dtype=torch.long,
+    )
+
+    out = model(tokens)
+
+    # 출력 shape 확인
+    assert out.shape == (B, S, D)
+
+    # embedding weight shape 확인
+    assert model.embedding.weight.shape == (vocab_size, D)
+
+    # 같은 token id는 같은 embedding vector를 반환해야 함
+    assert torch.allclose(out[0, 0], out[0, 3])
+    assert torch.allclose(out[0, 0], out[1, 1])
+
+    # embedding weight까지 gradient가 전달되는지 확인
+    out.sum().backward()
+    assert model.embedding.weight.grad is not None
+    assert model.embedding.weight.grad.shape == (vocab_size, D)
+
+    print("TokenEmbedding test passed")
 
 
 def test_positional_encoding() -> None:
@@ -44,4 +83,5 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_token_embedding()
     test_positional_encoding()
