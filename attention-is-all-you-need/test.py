@@ -8,6 +8,117 @@ from src.embedding import PositionalEncoding, TokenEmbedding
 from src.encoder import Encoder, EncoderLayer
 from src.feed_forward import PositionwiseFeedForward
 from src.masks import create_causal_mask, create_padding_mask
+from src.transformer import Transformer
+
+
+def test_transformer() -> None:
+    B = 2
+    S_source = 5
+    S_target = 4
+    vocab_size = 30
+    D_model = 16
+    H = 4
+    D_ff = 64
+    N = 2
+
+    model = Transformer(
+        vocab_size=vocab_size,
+        d_model=D_model,
+        num_heads=H,
+        d_ff=D_ff,
+        num_layers=N,
+        dropout=0.0,
+        max_len=20,
+        padding_index=0,
+    )
+
+    source_tokens = torch.tensor(
+        [
+            [1, 2, 3, 0, 0],
+            [4, 5, 6, 7, 0],
+        ]
+    )
+    target_tokens = torch.tensor(
+        [
+            [8, 9, 0, 0],
+            [10, 11, 12, 0],
+        ]
+    )
+
+    (
+        logits,
+        encoder_attention_weights,
+        decoder_self_weights,
+        decoder_cross_weights,
+    ) = model(source_tokens, target_tokens)
+
+    # 각 target 위치마다 vocabulary 전체에 대한 logit을 반환해야 함
+    assert logits.shape == (B, S_target, vocab_size)
+    assert len(encoder_attention_weights) == N
+    assert len(decoder_self_weights) == N
+    assert len(decoder_cross_weights) == N
+
+    future_positions = torch.triu(
+        torch.ones(S_target, S_target, dtype=torch.bool),
+        diagonal=1,
+    )
+
+    for encoder_weights in encoder_attention_weights:
+        assert encoder_weights.shape == (B, H, S_source, S_source)
+
+        # Encoder는 source padding key를 보지 않아야 함
+        assert torch.allclose(
+            encoder_weights[0, :, :, 3:],
+            torch.zeros(H, S_source, 2),
+        )
+        assert torch.allclose(
+            encoder_weights[1, :, :, 4:],
+            torch.zeros(H, S_source, 1),
+        )
+
+    for self_weights, cross_weights in zip(
+        decoder_self_weights,
+        decoder_cross_weights,
+    ):
+        assert self_weights.shape == (B, H, S_target, S_target)
+        assert cross_weights.shape == (B, H, S_target, S_source)
+
+        # Decoder Self-Attention은 미래 target token을 보지 않아야 함
+        assert torch.allclose(
+            self_weights[..., future_positions],
+            torch.zeros(B, H, future_positions.sum()),
+        )
+
+        # Decoder Cross-Attention은 source padding key를 보지 않아야 함
+        assert torch.allclose(
+            cross_weights[0, :, :, 3:],
+            torch.zeros(H, S_target, 2),
+        )
+        assert torch.allclose(
+            cross_weights[1, :, :, 4:],
+            torch.zeros(H, S_target, 1),
+        )
+
+    # 원논문처럼 두 embedding과 출력 projection의 weight를 공유해야 함
+    encoder_embedding = model.encoder.token_embedding.embedding.weight
+    decoder_embedding = model.decoder.token_embedding.embedding.weight
+    output_projection = model.output_projection.weight
+    assert encoder_embedding.data_ptr() == decoder_embedding.data_ptr()
+    assert encoder_embedding.data_ptr() == output_projection.data_ptr()
+
+    # 최종 출력에서 Encoder와 Decoder 전체로 gradient가 전달되는지 확인
+    logits[..., 0].sum().backward()
+    assert encoder_embedding.grad is not None
+    assert (
+        model.encoder.layers[0].self_attention.query_projection.weight.grad
+        is not None
+    )
+    assert (
+        model.decoder.layers[-1].cross_attention.query_projection.weight.grad
+        is not None
+    )
+
+    print("Transformer test passed")
 
 
 def test_decoder() -> None:
@@ -613,6 +724,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_transformer()
     test_decoder()
     test_decoder_layer()
     test_encoder()
