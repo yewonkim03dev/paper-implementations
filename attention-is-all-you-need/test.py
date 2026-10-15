@@ -3,11 +3,119 @@
 import torch
 
 from src.attention import MultiHeadAttention, ScaledDotProductAttention
-from src.decoder import DecoderLayer
+from src.decoder import Decoder, DecoderLayer
 from src.embedding import PositionalEncoding, TokenEmbedding
 from src.encoder import Encoder, EncoderLayer
 from src.feed_forward import PositionwiseFeedForward
 from src.masks import create_causal_mask, create_padding_mask
+
+
+def test_decoder() -> None:
+    B = 2
+    S_target = 4
+    S_source = 5
+    vocab_size = 30
+    D_model = 16
+    H = 4
+    D_ff = 64
+    N = 3
+
+    model = Decoder(
+        vocab_size=vocab_size,
+        d_model=D_model,
+        num_heads=H,
+        d_ff=D_ff,
+        num_layers=N,
+        dropout=0.0,
+        max_len=20,
+    )
+
+    target_tokens = torch.tensor(
+        [
+            [1, 2, 0, 0],
+            [3, 4, 5, 0],
+        ]
+    )
+    source_tokens = torch.tensor(
+        [
+            [1, 2, 3, 0, 0],
+            [4, 5, 6, 7, 0],
+        ]
+    )
+    encoder_output = torch.randn(
+        B,
+        S_source,
+        D_model,
+        requires_grad=True,
+    )
+
+    self_attention_mask = create_causal_mask(S_target)
+    self_attention_mask = self_attention_mask | create_padding_mask(
+        target_tokens
+    )
+    cross_attention_mask = create_padding_mask(source_tokens)
+
+    out, self_attention_weights, cross_attention_weights = model(
+        target_tokens,
+        encoder_output,
+        self_attention_mask,
+        cross_attention_mask,
+    )
+
+    # Decoder 출력과 layer별 attention weight 개수 확인
+    assert out.shape == (B, S_target, D_model)
+    assert len(self_attention_weights) == N
+    assert len(cross_attention_weights) == N
+
+    future_positions = torch.triu(
+        torch.ones(S_target, S_target, dtype=torch.bool),
+        diagonal=1,
+    )
+
+    for self_weights, cross_weights in zip(
+        self_attention_weights,
+        cross_attention_weights,
+    ):
+        assert self_weights.shape == (B, H, S_target, S_target)
+        assert cross_weights.shape == (B, H, S_target, S_source)
+
+        # 모든 layer에서 미래 target token을 보지 않아야 함
+        assert torch.allclose(
+            self_weights[..., future_positions],
+            torch.zeros(B, H, future_positions.sum()),
+        )
+
+        # 모든 layer에서 source padding key를 보지 않아야 함
+        assert torch.allclose(
+            cross_weights[0, :, :, 3:],
+            torch.zeros(H, S_target, 2),
+        )
+        assert torch.allclose(
+            cross_weights[1, :, :, 4:],
+            torch.zeros(H, S_target, 1),
+        )
+
+    # 각 DecoderLayer는 서로 다른 파라미터를 가져야 함
+    assert model.layers[0] is not model.layers[1]
+    assert (
+        model.layers[0].self_attention.query_projection.weight.data_ptr()
+        != model.layers[1].self_attention.query_projection.weight.data_ptr()
+    )
+
+    # embedding, encoder 출력, 처음/마지막 layer까지 gradient 전달 확인
+    out[..., 0].sum().backward()
+    assert model.token_embedding.embedding.weight.grad is not None
+    assert encoder_output.grad is not None
+    assert (
+        model.layers[0].self_attention.query_projection.weight.grad
+        is not None
+    )
+    assert (
+        model.layers[-1].cross_attention.query_projection.weight.grad
+        is not None
+    )
+
+    print("Decoder test passed")
 
 
 def test_decoder_layer() -> None:
@@ -505,6 +613,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_decoder()
     test_decoder_layer()
     test_encoder()
     test_encoder_layer()

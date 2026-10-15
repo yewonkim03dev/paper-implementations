@@ -77,4 +77,71 @@ class DecoderLayer(nn.Module):
 
 
 class Decoder(nn.Module):
-    pass
+    def __init__(
+        self,
+        vocab_size: int,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        num_layers: int,
+        dropout: float = 0.1,
+        max_len: int = 5000,
+    ):
+        super().__init__()
+
+        if num_layers <= 0:
+            raise ValueError("num_layers must be greater than 0")
+
+        self.token_embedding = TokenEmbedding(vocab_size, d_model)
+        self.positional_encoding = PositionalEncoding(
+            d_model,
+            dropout,
+            max_len,
+        )
+        self.layers = nn.ModuleList(
+            [
+                DecoderLayer(d_model, num_heads, d_ff, dropout)
+                for _ in range(num_layers)
+            ]
+        )
+
+    def forward(
+        self,
+        tokens: Tensor,
+        encoder_output: Tensor,
+        self_attention_mask: Tensor | None = None,
+        cross_attention_mask: Tensor | None = None,
+    ) -> tuple[Tensor, list[Tensor], list[Tensor]]:
+        # tokens: (B, S_target)
+        # encoder_output: (B, S_source, D_model)
+
+        # Token Embedding: (B, S_target) -> (B, S_target, D_model)
+        x = self.token_embedding(tokens)
+
+        # Positional Encoding
+        # (B, S_target, D_model) -> (B, S_target, D_model)
+        x = self.positional_encoding(x)
+
+        self_attention_weights = []
+        cross_attention_weights = []
+
+        for layer in self.layers:
+            # DecoderLayer: (B, S_target, D_model)
+            # -> (B, S_target, D_model)
+            x, layer_self_weights, layer_cross_weights = layer(
+                x,
+                encoder_output,
+                self_attention_mask,
+                cross_attention_mask,
+            )
+
+            # Self-Attention: (B, H, S_target, S_target)
+            self_attention_weights.append(layer_self_weights)
+
+            # Cross-Attention: (B, H, S_target, S_source)
+            cross_attention_weights.append(layer_cross_weights)
+
+        # return (B, S_target, D_model),
+        #        N * (B, H, S_target, S_target),
+        #        N * (B, H, S_target, S_source)
+        return x, self_attention_weights, cross_attention_weights
