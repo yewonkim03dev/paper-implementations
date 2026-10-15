@@ -3,10 +3,114 @@
 import torch
 
 from src.attention import MultiHeadAttention, ScaledDotProductAttention
+from src.decoder import DecoderLayer
 from src.embedding import PositionalEncoding, TokenEmbedding
 from src.encoder import Encoder, EncoderLayer
 from src.feed_forward import PositionwiseFeedForward
 from src.masks import create_causal_mask, create_padding_mask
+
+
+def test_decoder_layer() -> None:
+    B = 2
+    S_target = 4
+    S_source = 5
+    D_model = 16
+    H = 4
+    D_ff = 64
+
+    model = DecoderLayer(
+        d_model=D_model,
+        num_heads=H,
+        d_ff=D_ff,
+        dropout=0.0,
+    )
+
+    x = torch.randn(B, S_target, D_model, requires_grad=True)
+    encoder_output = torch.randn(
+        B,
+        S_source,
+        D_model,
+        requires_grad=True,
+    )
+
+    target_tokens = torch.tensor(
+        [
+            [1, 2, 0, 0],
+            [3, 4, 5, 0],
+        ]
+    )
+    source_tokens = torch.tensor(
+        [
+            [1, 2, 3, 0, 0],
+            [4, 5, 6, 7, 0],
+        ]
+    )
+
+    # 미래 token과 target padding을 함께 가리는 self-attention mask
+    self_attention_mask = create_causal_mask(S_target)
+    self_attention_mask = self_attention_mask | create_padding_mask(
+        target_tokens
+    )
+    cross_attention_mask = create_padding_mask(source_tokens)
+
+    out, self_attention_weights, cross_attention_weights = model(
+        x,
+        encoder_output,
+        self_attention_mask,
+        cross_attention_mask,
+    )
+
+    # DecoderLayer 출력과 두 attention weight의 shape 확인
+    assert out.shape == (B, S_target, D_model)
+    assert self_attention_weights.shape == (B, H, S_target, S_target)
+    assert cross_attention_weights.shape == (B, H, S_target, S_source)
+
+    # self-attention은 미래 token을 보지 않아야 함
+    future_positions = torch.triu(
+        torch.ones(S_target, S_target, dtype=torch.bool),
+        diagonal=1,
+    )
+    assert torch.allclose(
+        self_attention_weights[..., future_positions],
+        torch.zeros(B, H, future_positions.sum()),
+    )
+
+    # target padding key 위치에는 self-attention을 주지 않아야 함
+    assert torch.allclose(
+        self_attention_weights[0, :, :, 2:],
+        torch.zeros(H, S_target, 2),
+    )
+    assert torch.allclose(
+        self_attention_weights[1, :, :, 3:],
+        torch.zeros(H, S_target, 1),
+    )
+
+    # source padding key 위치에는 cross-attention을 주지 않아야 함
+    assert torch.allclose(
+        cross_attention_weights[0, :, :, 3:],
+        torch.zeros(H, S_target, 2),
+    )
+    assert torch.allclose(
+        cross_attention_weights[1, :, :, 4:],
+        torch.zeros(H, S_target, 1),
+    )
+
+    # 마지막 연산이 LayerNorm이므로 feature 평균은 0에 가까워야 함
+    assert torch.allclose(
+        out.mean(dim=-1),
+        torch.zeros(B, S_target),
+        atol=1e-6,
+    )
+
+    # 입력과 세 sublayer까지 gradient가 전달되는지 확인
+    out[..., 0].sum().backward()
+    assert x.grad is not None
+    assert encoder_output.grad is not None
+    assert model.self_attention.query_projection.weight.grad is not None
+    assert model.cross_attention.query_projection.weight.grad is not None
+    assert model.feed_forward.linear1.weight.grad is not None
+
+    print("DecoderLayer test passed")
 
 
 def test_encoder() -> None:
@@ -401,6 +505,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_decoder_layer()
     test_encoder()
     test_encoder_layer()
     test_attention_masks()
