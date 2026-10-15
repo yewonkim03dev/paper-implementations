@@ -4,9 +4,76 @@ import torch
 
 from src.attention import MultiHeadAttention, ScaledDotProductAttention
 from src.embedding import PositionalEncoding, TokenEmbedding
-from src.encoder import EncoderLayer
+from src.encoder import Encoder, EncoderLayer
 from src.feed_forward import PositionwiseFeedForward
 from src.masks import create_causal_mask, create_padding_mask
+
+
+def test_encoder() -> None:
+    B = 2
+    S = 5
+    vocab_size = 30
+    D_model = 16
+    H = 4
+    D_ff = 64
+    N = 3
+
+    model = Encoder(
+        vocab_size=vocab_size,
+        d_model=D_model,
+        num_heads=H,
+        d_ff=D_ff,
+        num_layers=N,
+        dropout=0.0,
+        max_len=20,
+    )
+
+    tokens = torch.tensor(
+        [
+            [1, 2, 3, 0, 0],
+            [4, 5, 6, 7, 0],
+        ]
+    )
+    padding_mask = create_padding_mask(tokens)
+
+    out, attention_weights = model(tokens, padding_mask)
+
+    # Encoder 출력 shape와 layer별 attention weight shape 확인
+    assert out.shape == (B, S, D_model)
+    assert len(attention_weights) == N
+    for weights in attention_weights:
+        assert weights.shape == (B, H, S, S)
+
+        # padding key 위치에는 attention을 주지 않아야 함
+        assert torch.allclose(
+            weights[0, :, :, 3:],
+            torch.zeros(H, S, 2),
+        )
+        assert torch.allclose(
+            weights[1, :, :, 4:],
+            torch.zeros(H, S, 1),
+        )
+
+    # 각 EncoderLayer는 서로 다른 파라미터를 가져야 함
+    assert model.layers[0] is not model.layers[1]
+    assert (
+        model.layers[0].self_attention.query_projection.weight.data_ptr()
+        != model.layers[1].self_attention.query_projection.weight.data_ptr()
+    )
+
+    # embedding과 처음/마지막 layer까지 gradient가 전달되는지 확인
+    out[..., 0].sum().backward()
+    assert model.token_embedding.embedding.weight.grad is not None
+    assert (
+        model.layers[0].self_attention.query_projection.weight.grad
+        is not None
+    )
+    assert (
+        model.layers[-1].self_attention.query_projection.weight.grad
+        is not None
+    )
+
+    print("Encoder test passed")
 
 
 def test_encoder_layer() -> None:
@@ -334,6 +401,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_encoder()
     test_encoder_layer()
     test_attention_masks()
     test_positionwise_feed_forward()
