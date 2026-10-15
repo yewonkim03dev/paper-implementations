@@ -8,7 +8,7 @@
 
 ## 구현 상태
 
-구현 중 — 기본 파일 구조를 만들었고, 논문을 읽으며 Transformer의 구성 요소를 하나씩 구현할 예정임.
+구현 중. 기본 파일 구조를 만들었고, 논문을 읽으며 Transformer의 구성 요소를 하나씩 구현할 예정임.
 
 ## 구현할 구성 요소
 
@@ -19,7 +19,7 @@
 - Encoder / Decoder
 - Transformer
 
-아직 실제 연산은 구현하지 않았다. 각 구성 요소를 구현한 뒤 작은 random tensor로 shape과 forward/backward 동작을 확인할 예정이다.
+아직 실제 연산은 구현하지 않았음. 각 구성 요소를 구현한 뒤 작은 랜덤 tensor로 shape과 forward/backward 동작을 확인할 예정
 
 ## 프로젝트 구조
 
