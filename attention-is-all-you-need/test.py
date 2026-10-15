@@ -4,8 +4,64 @@ import torch
 
 from src.attention import MultiHeadAttention, ScaledDotProductAttention
 from src.embedding import PositionalEncoding, TokenEmbedding
+from src.encoder import EncoderLayer
 from src.feed_forward import PositionwiseFeedForward
 from src.masks import create_causal_mask, create_padding_mask
+
+
+def test_encoder_layer() -> None:
+    B = 2
+    S = 5
+    D_model = 16
+    H = 4
+    D_ff = 64
+
+    model = EncoderLayer(
+        d_model=D_model,
+        num_heads=H,
+        d_ff=D_ff,
+        dropout=0.0,
+    )
+
+    x = torch.randn(B, S, D_model, requires_grad=True)
+    tokens = torch.tensor(
+        [
+            [1, 2, 3, 0, 0],
+            [4, 5, 6, 7, 0],
+        ]
+    )
+    padding_mask = create_padding_mask(tokens)
+
+    out, attention_weights = model(x, padding_mask)
+
+    # EncoderLayer는 입력과 같은 shape를 반환해야 함
+    assert out.shape == (B, S, D_model)
+    assert attention_weights.shape == (B, H, S, S)
+
+    # padding key 위치에는 attention을 주지 않아야 함
+    assert torch.allclose(
+        attention_weights[0, :, :, 3:],
+        torch.zeros(H, S, 2),
+    )
+    assert torch.allclose(
+        attention_weights[1, :, :, 4:],
+        torch.zeros(H, S, 1),
+    )
+
+    # 마지막 연산이 LayerNorm이므로 feature 평균은 0에 가까워야 함
+    assert torch.allclose(
+        out.mean(dim=-1),
+        torch.zeros(B, S),
+        atol=1e-6,
+    )
+
+    # 입력과 두 sublayer까지 gradient가 전달되는지 확인
+    out.sum().backward()
+    assert x.grad is not None
+    assert model.self_attention.query_projection.weight.grad is not None
+    assert model.feed_forward.linear1.weight.grad is not None
+
+    print("EncoderLayer test passed")
 
 
 def test_attention_masks() -> None:
@@ -278,6 +334,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_encoder_layer()
     test_attention_masks()
     test_positionwise_feed_forward()
     test_multi_head_attention()
