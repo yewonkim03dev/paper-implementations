@@ -5,6 +5,54 @@ import torch
 from src.attention import MultiHeadAttention, ScaledDotProductAttention
 from src.embedding import PositionalEncoding, TokenEmbedding
 from src.feed_forward import PositionwiseFeedForward
+from src.masks import create_causal_mask, create_padding_mask
+
+
+def test_attention_masks() -> None:
+    tokens = torch.tensor(
+        [
+            [1, 2, 0, 0],
+            [3, 4, 5, 0],
+        ]
+    )
+
+    padding_mask = create_padding_mask(tokens, padding_index=0)
+
+    # (B, S) -> (B, 1, 1, S)
+    assert padding_mask.shape == (2, 1, 1, 4)
+    assert padding_mask.dtype == torch.bool
+    assert torch.equal(
+        padding_mask[:, 0, 0],
+        torch.tensor(
+            [
+                [False, False, True, True],
+                [False, False, False, True],
+            ]
+        ),
+    )
+
+    causal_mask = create_causal_mask(sequence_length=4)
+
+    # 미래 token만 가리는 상삼각 mask여야 함
+    assert causal_mask.shape == (1, 1, 4, 4)
+    assert causal_mask.dtype == torch.bool
+    assert torch.equal(
+        causal_mask[0, 0],
+        torch.tensor(
+            [
+                [False, True, True, True],
+                [False, False, True, True],
+                [False, False, False, True],
+                [False, False, False, False],
+            ]
+        ),
+    )
+
+    # 두 mask는 broadcast되어 Decoder self-attention mask로 결합할 수 있어야 함
+    combined_mask = padding_mask | causal_mask
+    assert combined_mask.shape == (2, 1, 4, 4)
+
+    print("Attention mask test passed")
 
 
 def test_positionwise_feed_forward() -> None:
@@ -230,6 +278,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_attention_masks()
     test_positionwise_feed_forward()
     test_multi_head_attention()
     test_scaled_dot_product_attention()
