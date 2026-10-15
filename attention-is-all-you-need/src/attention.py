@@ -17,17 +17,22 @@ class ScaledDotProductAttention(nn.Module):
         # value: (B, H, S_k, D_head)
         d_k = query.size(-1)
 
-        # scores: (B, H, S_q, S_k)
+        # query @ key^T
+        # (B, H, S_q, D_head) @ (B, H, D_head, S_k)
+        # -> (B, H, S_q, S_k)
         scores = torch.matmul(query, key.transpose(-2, -1))
         scores = scores / math.sqrt(d_k)
 
         if mask is not None:
+            # mask: (B, H, S_q, S_k)로 broadcast 가능한 shape
             scores = scores.masked_fill(mask, float("-inf"))
 
         # (B, H, S_q, S_k)
         attention_weights = torch.softmax(scores, dim=-1)
 
-        # (B, H, S_q, D_head)
+        # attention_weights @ value
+        # (B, H, S_q, S_k) @ (B, H, S_k, D_head)
+        # -> (B, H, S_q, D_head)
         output = torch.matmul(attention_weights, value)
 
         # return (B, H, S_q, D_head), (B, H, S_q, S_k)
