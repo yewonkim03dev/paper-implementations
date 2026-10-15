@@ -2,7 +2,66 @@
 
 import torch
 
+from src.attention import ScaledDotProductAttention
 from src.embedding import PositionalEncoding, TokenEmbedding
+
+
+def test_scaled_dot_product_attention() -> None:
+    B = 2
+    H = 4
+    S_q = 3
+    S_k = 5
+    D_head = 8
+
+    model = ScaledDotProductAttention()
+
+    query = torch.randn(B, H, S_q, D_head, requires_grad=True)
+    key = torch.randn(B, H, S_k, D_head, requires_grad=True)
+    value = torch.randn(B, H, S_k, D_head, requires_grad=True)
+
+    # 마지막 key 위치를 모든 query에서 가림
+    mask = torch.zeros(1, 1, S_q, S_k, dtype=torch.bool)
+    mask[..., -1] = True
+
+    out, attention_weights = model(query, key, value, mask)
+
+    # 출력과 attention weight shape 확인
+    assert out.shape == (B, H, S_q, D_head)
+    assert attention_weights.shape == (B, H, S_q, S_k)
+
+    # 각 query에 대한 attention weight의 합은 1이어야 함
+    assert torch.allclose(
+        attention_weights.sum(dim=-1),
+        torch.ones(B, H, S_q),
+    )
+
+    # mask 처리된 위치에는 attention을 주지 않아야 함
+    assert torch.allclose(
+        attention_weights[..., -1],
+        torch.zeros(B, H, S_q),
+    )
+
+    # query, key, value까지 gradient가 전달되는지 확인
+    out.sum().backward()
+    assert query.grad is not None
+    assert key.grad is not None
+    assert value.grad is not None
+
+    # head 차원이 없는 단일 attention 입력도 처리할 수 있어야 함
+    single_query = torch.randn(B, S_q, D_head)
+    single_key = torch.randn(B, S_k, D_head)
+    single_value = torch.randn(B, S_k, D_head)
+
+    single_out, single_weights = model(
+        single_query,
+        single_key,
+        single_value,
+    )
+
+    assert single_out.shape == (B, S_q, D_head)
+    assert single_weights.shape == (B, S_q, S_k)
+
+    print("ScaledDotProductAttention test passed")
 
 
 def test_token_embedding() -> None:
@@ -83,5 +142,6 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_scaled_dot_product_attention()
     test_token_embedding()
     test_positional_encoding()
