@@ -4,6 +4,42 @@ import torch
 
 from src.attention import MultiHeadAttention, ScaledDotProductAttention
 from src.embedding import PositionalEncoding, TokenEmbedding
+from src.feed_forward import PositionwiseFeedForward
+
+
+def test_positionwise_feed_forward() -> None:
+    B = 2
+    S = 5
+    D_model = 16
+    D_ff = 64
+
+    model = PositionwiseFeedForward(
+        d_model=D_model,
+        d_ff=D_ff,
+    )
+
+    x = torch.randn(B, S, D_model, requires_grad=True)
+    out = model(x)
+
+    # 입력과 출력 shape가 같아야 함
+    assert out.shape == (B, S, D_model)
+
+    # 중간 차원으로 확장한 뒤 다시 D_model로 줄여야 함
+    assert model.linear1.weight.shape == (D_ff, D_model)
+    assert model.linear2.weight.shape == (D_model, D_ff)
+
+    # 같은 입력 vector에는 position과 관계없이 같은 결과가 나와야 함
+    repeated = torch.randn(1, 1, D_model).expand(1, 2, -1)
+    repeated_out = model(repeated)
+    assert torch.allclose(repeated_out[:, 0], repeated_out[:, 1])
+
+    # 입력과 두 Linear layer까지 gradient가 전달되는지 확인
+    out.sum().backward()
+    assert x.grad is not None
+    assert model.linear1.weight.grad is not None
+    assert model.linear2.weight.grad is not None
+
+    print("PositionwiseFeedForward test passed")
 
 
 def test_multi_head_attention() -> None:
@@ -194,6 +230,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_positionwise_feed_forward()
     test_multi_head_attention()
     test_scaled_dot_product_attention()
     test_token_embedding()
