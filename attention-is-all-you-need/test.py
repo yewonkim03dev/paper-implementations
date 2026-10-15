@@ -2,8 +2,60 @@
 
 import torch
 
-from src.attention import ScaledDotProductAttention
+from src.attention import MultiHeadAttention, ScaledDotProductAttention
 from src.embedding import PositionalEncoding, TokenEmbedding
+
+
+def test_multi_head_attention() -> None:
+    B = 2
+    S_q = 3
+    S_k = 5
+    D_model = 16
+    H = 4
+
+    model = MultiHeadAttention(
+        d_model=D_model,
+        num_heads=H,
+    )
+
+    # query 길이와 key/value 길이가 다른 cross-attention 입력
+    query = torch.randn(B, S_q, D_model, requires_grad=True)
+    key = torch.randn(B, S_k, D_model, requires_grad=True)
+    value = torch.randn(B, S_k, D_model, requires_grad=True)
+
+    mask = torch.zeros(B, 1, S_q, S_k, dtype=torch.bool)
+    mask[..., -1] = True
+
+    out, attention_weights = model(query, key, value, mask)
+
+    # 출력과 attention weight shape 확인
+    assert out.shape == (B, S_q, D_model)
+    assert attention_weights.shape == (B, H, S_q, S_k)
+
+    # mask 처리된 위치에는 attention을 주지 않아야 함
+    assert torch.allclose(
+        attention_weights[..., -1],
+        torch.zeros(B, H, S_q),
+    )
+
+    # 입력과 projection weight까지 gradient가 전달되는지 확인
+    out.sum().backward()
+    assert query.grad is not None
+    assert key.grad is not None
+    assert value.grad is not None
+    assert model.query_projection.weight.grad is not None
+    assert model.key_projection.weight.grad is not None
+    assert model.value_projection.weight.grad is not None
+    assert model.output_projection.weight.grad is not None
+
+    # query, key, value가 같은 self-attention 입력도 처리할 수 있어야 함
+    x = torch.randn(B, S_k, D_model)
+    self_attention_out, self_attention_weights = model(x, x, x)
+
+    assert self_attention_out.shape == (B, S_k, D_model)
+    assert self_attention_weights.shape == (B, H, S_k, S_k)
+
+    print("MultiHeadAttention test passed")
 
 
 def test_scaled_dot_product_attention() -> None:
@@ -142,6 +194,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_multi_head_attention()
     test_scaled_dot_product_attention()
     test_token_embedding()
     test_positional_encoding()
