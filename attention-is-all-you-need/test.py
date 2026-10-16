@@ -1,5 +1,8 @@
 """Local validation entry point for the Attention Is All You Need implementation."""
 
+from pathlib import Path
+import tempfile
+
 import torch
 
 from src.attention import MultiHeadAttention, ScaledDotProductAttention
@@ -8,7 +11,130 @@ from src.embedding import PositionalEncoding, TokenEmbedding
 from src.encoder import Encoder, EncoderLayer
 from src.feed_forward import PositionwiseFeedForward
 from src.masks import create_causal_mask, create_padding_mask
+from src.tokenizer import (
+    BOS_INDEX,
+    BPETokenizer,
+    EOS_INDEX,
+    PAD_INDEX,
+    UNK_INDEX,
+    load_parallel_corpus,
+    normalize_text,
+    preprocess_pairs,
+)
 from src.transformer import Transformer
+
+
+def test_tokenizer() -> None:
+    # 공백 정리 및 NFC 정규화 확인
+    assert normalize_text("  Hello   world! \n ") == "Hello world!"
+
+    raw_pairs = [
+        ("  A man in an orange hat.  ", "  Ein Mann mit einem orangefarbenen Hut. "),
+        ("", "Leere Quelle."),
+        ("Empty target.", "   "),
+        ("A Boston Terrier is running on lush green grass.", "Ein Boston Terrier läuft über saftig-grünes Gras."),
+        ("A girl in karate uniform breaking a stick.", "Ein Mädchen im Karateanzug bricht einen Stock."),
+    ]
+
+    # 빈 문장 제거 및 단어 수 기준 길이 필터링 확인
+    cleaned_pairs = preprocess_pairs(raw_pairs)
+    assert len(cleaned_pairs) == 3
+    assert len(preprocess_pairs(raw_pairs, max_length=7)) == 1
+
+    # 공유 BPE 토크나이저 학습
+    tokenizer = BPETokenizer()
+    tokenizer.train_from_pairs(
+        cleaned_pairs,
+        vocab_size=120,
+        min_frequency=1,
+    )
+
+    # Special token index가 Transformer의 padding_index(0) 및 약속된 상수와 일치해야 함
+    assert tokenizer.pad_index == PAD_INDEX == 0
+    assert tokenizer.unk_index == UNK_INDEX == 1
+    assert tokenizer.bos_index == BOS_INDEX == 2
+    assert tokenizer.eos_index == EOS_INDEX == 3
+    assert tokenizer.vocab_size > 4
+
+    # Source sequence는 [<tokens>, <eos>], Target sequence는 [<bos>, <tokens>, <eos>]
+    source_text = "A girl in karate uniform breaking a stick."
+    target_text = "Ein Mädchen im Karateanzug bricht einen Stock."
+
+    source_ids = tokenizer.encode_source(source_text)
+    target_ids = tokenizer.encode_target(target_text)
+
+    assert source_ids[-1] == EOS_INDEX
+    assert BOS_INDEX not in source_ids
+    assert target_ids[0] == BOS_INDEX
+    assert target_ids[-1] == EOS_INDEX
+
+    # <bos>, <eos>, <pad> 및 <eos> 이후 토큰을 제외하고 원문으로 복원해야 함
+    padded_target = torch.tensor(
+        [*target_ids, PAD_INDEX, PAD_INDEX, 5],
+        dtype=torch.long,
+    )
+    assert tokenizer.decode(source_ids) == source_text
+    assert tokenizer.decode(padded_target) == target_text
+
+    # 학습되지 않은 문자는 <unk>를 포함해 인코딩되어야 함
+    unknown_ids = tokenizer.encode("🛸")
+    assert UNK_INDEX in unknown_ids
+
+    # 토크나이저 기준 max_length 필터링과 병렬 코퍼스 파일 로딩 및 저장/복원 확인
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        src_file = tmp_path / "train.en"
+        tgt_file = tmp_path / "train.de"
+        tok_file = tmp_path / "tokenizer.json"
+
+        src_file.write_text(
+            "A man in an orange hat.\n\nA girl in karate uniform breaking a stick.\n",
+            encoding="utf-8",
+        )
+        tgt_file.write_text(
+            "Ein Mann mit einem orangefarbenen Hut.\nIgnored line\nEin Mädchen im Karateanzug bricht einen Stock.\n",
+            encoding="utf-8",
+        )
+
+        loaded_pairs = load_parallel_corpus(src_file, tgt_file)
+        assert len(loaded_pairs) == 2
+
+        short_max_len = max(
+            len(tokenizer.encode_source("A man in an orange hat.")),
+            len(tokenizer.encode_target("Ein Mann mit einem orangefarbenen Hut.")),
+        )
+        filtered_by_tokens = load_parallel_corpus(
+            src_file,
+            tgt_file,
+            max_length=short_max_len,
+            tokenizer=tokenizer,
+        )
+        assert filtered_by_tokens == [
+            ("A man in an orange hat.", "Ein Mann mit einem orangefarbenen Hut.")
+        ]
+
+        tokenizer.save(tok_file)
+        reloaded = BPETokenizer.load(tok_file)
+        assert reloaded.vocab_size == tokenizer.vocab_size
+        assert reloaded.encode_target(target_text) == target_ids
+        assert reloaded.decode(target_ids) == target_text
+
+    # 토크나이저 출력을 Transformer에 바로 입력할 수 있는지 확인
+    model = Transformer(
+        vocab_size=tokenizer.vocab_size,
+        d_model=16,
+        num_heads=4,
+        d_ff=32,
+        num_layers=2,
+        dropout=0.0,
+        padding_index=tokenizer.pad_index,
+    )
+    source_batch = torch.tensor([source_ids], dtype=torch.long)
+    decoder_input = torch.tensor([target_ids[:-1]], dtype=torch.long)
+    logits, _, _, _ = model(source_batch, decoder_input)
+    assert logits.shape == (1, len(target_ids) - 1, tokenizer.vocab_size)
+
+    print("Tokenizer test passed")
 
 
 def test_transformer() -> None:
@@ -724,6 +850,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_tokenizer()
     test_transformer()
     test_decoder()
     test_decoder_layer()
