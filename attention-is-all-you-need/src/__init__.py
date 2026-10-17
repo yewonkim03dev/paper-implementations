@@ -14,6 +14,11 @@ from .tokenizer import (
     preprocess_pairs,
 )
 from .data import TranslationDataset, collate_translation_batch
+from .training import (
+    LabelSmoothingLoss,
+    TransformerLRScheduler,
+    create_transformer_optimizer,
+)
 from .transformer import Transformer
 
 __all__ = [
@@ -22,14 +27,17 @@ __all__ = [
     "BPETokenizer",
     "EOS_INDEX",
     "EOS_TOKEN",
+    "LabelSmoothingLoss",
     "PAD_INDEX",
     "PAD_TOKEN",
     "SPECIAL_TOKENS",
     "TranslationDataset",
+    "TransformerLRScheduler",
     "Transformer",
     "UNK_INDEX",
     "UNK_TOKEN",
     "collate_translation_batch",
+    "create_transformer_optimizer",
     "load_parallel_corpus",
     "normalize_text",
     "preprocess_pairs",

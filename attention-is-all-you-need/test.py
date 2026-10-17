@@ -23,7 +23,92 @@ from src.tokenizer import (
     normalize_text,
     preprocess_pairs,
 )
+from src.training import LabelSmoothingLoss, create_transformer_optimizer
 from src.transformer import Transformer
+
+
+def test_training_setup() -> None:
+    B = 2
+    S_target = 4
+    vocab_size = 12
+
+    loss_function = LabelSmoothingLoss(
+        smoothing=0.1,
+        padding_index=PAD_INDEX,
+    )
+    logits = torch.randn(
+        B,
+        S_target,
+        vocab_size,
+        requires_grad=True,
+    )
+    labels = torch.tensor(
+        [
+            [4, 5, EOS_INDEX, PAD_INDEX],
+            [6, 7, 8, EOS_INDEX],
+        ]
+    )
+
+    loss = loss_function(logits, labels)
+    assert loss.dim() == 0
+    assert torch.isfinite(loss)
+
+    # padding 위치의 logit은 loss에 영향을 주지 않아야 함
+    changed_logits = logits.detach().clone()
+    changed_logits[labels == PAD_INDEX] = torch.randn(vocab_size) * 100
+    changed_loss = loss_function(changed_logits, labels)
+    assert torch.allclose(loss.detach(), changed_loss)
+
+    loss.backward()
+    assert logits.grad is not None
+    assert torch.all(logits.grad[labels == PAD_INDEX] == 0)
+    assert torch.any(logits.grad[labels != PAD_INDEX] != 0)
+
+    model = Transformer(
+        vocab_size=vocab_size,
+        d_model=16,
+        num_heads=4,
+        d_ff=32,
+        num_layers=1,
+        dropout=0.0,
+        padding_index=PAD_INDEX,
+    )
+    optimizer, scheduler = create_transformer_optimizer(
+        model.parameters(),
+        d_model=16,
+        warmup_steps=4,
+    )
+
+    assert optimizer.defaults["betas"] == (0.9, 0.98)
+    assert optimizer.defaults["eps"] == 1e-9
+    assert optimizer.param_groups[0]["lr"] == 0.0
+
+    # warmup 동안 증가하고 이후 step의 제곱근에 반비례해 감소해야 함
+    assert scheduler.rate(1) < scheduler.rate(2)
+    assert scheduler.rate(3) < scheduler.rate(4)
+    assert scheduler.rate(5) < scheduler.rate(4)
+
+    source_tokens = torch.tensor([[4, 5, EOS_INDEX, PAD_INDEX]])
+    decoder_input = torch.tensor([[BOS_INDEX, 6, 7]])
+    target_labels = torch.tensor([[6, 7, EOS_INDEX]])
+
+    optimizer.zero_grad()
+    model_logits, _, _, _ = model(source_tokens, decoder_input)
+    model_loss = loss_function(model_logits, target_labels)
+    model_loss.backward()
+
+    parameter = model.encoder.layers[0].self_attention.query_projection.weight
+    parameter_before_step = parameter.detach().clone()
+
+    # learning rate를 먼저 설정한 뒤 optimizer가 parameter를 갱신한다.
+    learning_rate = scheduler.step()
+    optimizer.step()
+
+    assert learning_rate == scheduler.rate(1)
+    assert optimizer.param_groups[0]["lr"] == learning_rate
+    assert not torch.equal(parameter, parameter_before_step)
+
+    print("Training setup test passed")
 
 
 def test_translation_dataset() -> None:
@@ -966,6 +1051,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_training_setup()
     test_translation_dataset()
     test_tokenizer()
     test_transformer()
