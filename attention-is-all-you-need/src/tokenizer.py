@@ -1,4 +1,5 @@
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from itertools import zip_longest
 from pathlib import Path
 import unicodedata
 
@@ -29,15 +30,13 @@ def normalize_text(text: str) -> str:
     return " ".join(normalized.strip().split())
 
 
-def preprocess_pairs(
+def _iter_preprocessed_pairs(
     pairs: Iterable[tuple[str, str]],
     max_length: int | None = None,
     tokenizer: "BPETokenizer | None" = None,
-) -> list[tuple[str, str]]:
+) -> Iterator[tuple[str, str]]:
     if max_length is not None and max_length <= 0:
         raise ValueError("max_length must be greater than 0")
-
-    cleaned_pairs: list[tuple[str, str]] = []
 
     for source_text, target_text in pairs:
         source_clean = normalize_text(source_text)
@@ -58,9 +57,37 @@ def preprocess_pairs(
             if source_len > max_length or target_len > max_length:
                 continue
 
-        cleaned_pairs.append((source_clean, target_clean))
+        yield source_clean, target_clean
 
-    return cleaned_pairs
+
+def preprocess_pairs(
+    pairs: Iterable[tuple[str, str]],
+    max_length: int | None = None,
+    tokenizer: "BPETokenizer | None" = None,
+) -> list[tuple[str, str]]:
+    return list(
+        _iter_preprocessed_pairs(
+            pairs,
+            max_length=max_length,
+            tokenizer=tokenizer,
+        )
+    )
+
+
+def _iter_aligned_lines(
+    source_lines: Iterable[str],
+    target_lines: Iterable[str],
+) -> Iterator[tuple[str, str]]:
+    for line_number, (source_line, target_line) in enumerate(
+        zip_longest(source_lines, target_lines),
+        start=1,
+    ):
+        if source_line is None or target_line is None:
+            raise ValueError(
+                "source and target files must have the same number of lines "
+                f"(mismatch at line {line_number})"
+            )
+        yield source_line, target_line
 
 
 def load_parallel_corpus(
@@ -68,20 +95,17 @@ def load_parallel_corpus(
     target_path: str | Path,
     max_length: int | None = None,
     tokenizer: "BPETokenizer | None" = None,
-) -> list[tuple[str, str]]:
-    source_lines = Path(source_path).read_text(encoding="utf-8").splitlines()
-    target_lines = Path(target_path).read_text(encoding="utf-8").splitlines()
+) -> Iterator[tuple[str, str]]:
+    source_file_path = Path(source_path)
+    target_file_path = Path(target_path)
 
-    if len(source_lines) != len(target_lines):
-        raise ValueError(
-            "source and target files must have the same number of lines"
-        )
-
-    return preprocess_pairs(
-        zip(source_lines, target_lines),
-        max_length=max_length,
-        tokenizer=tokenizer,
-    )
+    with source_file_path.open(encoding="utf-8") as source_file:
+        with target_file_path.open(encoding="utf-8") as target_file:
+            yield from _iter_preprocessed_pairs(
+                _iter_aligned_lines(source_file, target_file),
+                max_length=max_length,
+                tokenizer=tokenizer,
+            )
 
 
 class BPETokenizer:

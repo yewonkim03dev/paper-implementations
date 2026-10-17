@@ -96,22 +96,39 @@ def test_tokenizer() -> None:
             encoding="utf-8",
         )
 
-        loaded_pairs = load_parallel_corpus(src_file, tgt_file)
+        loaded_pairs_stream = load_parallel_corpus(src_file, tgt_file)
+        assert iter(loaded_pairs_stream) is loaded_pairs_stream
+        loaded_pairs = list(loaded_pairs_stream)
         assert len(loaded_pairs) == 2
 
         short_max_len = max(
             len(tokenizer.encode_source("A man in an orange hat.")),
             len(tokenizer.encode_target("Ein Mann mit einem orangefarbenen Hut.")),
         )
-        filtered_by_tokens = load_parallel_corpus(
-            src_file,
-            tgt_file,
-            max_length=short_max_len,
-            tokenizer=tokenizer,
+        filtered_by_tokens = list(
+            load_parallel_corpus(
+                src_file,
+                tgt_file,
+                max_length=short_max_len,
+                tokenizer=tokenizer,
+            )
         )
         assert filtered_by_tokens == [
             ("A man in an orange hat.", "Ein Mann mit einem orangefarbenen Hut.")
         ]
+
+        # 두 파일의 줄 수가 다르면 스트림을 소비하는 시점에 오류가 발생해야 함
+        mismatched_tgt_file = tmp_path / "mismatched.de"
+        mismatched_tgt_file.write_text(
+            "Ein Mann mit einem orangefarbenen Hut.\n",
+            encoding="utf-8",
+        )
+        try:
+            list(load_parallel_corpus(src_file, mismatched_tgt_file))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Expected mismatched corpus lengths to fail")
 
         tokenizer.save(tok_file)
         reloaded = BPETokenizer.load(tok_file)
