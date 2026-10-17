@@ -4,8 +4,10 @@ from pathlib import Path
 import tempfile
 
 import torch
+from torch.utils.data import DataLoader
 
 from src.attention import MultiHeadAttention, ScaledDotProductAttention
+from src.data import TranslationDataset, collate_translation_batch
 from src.decoder import Decoder, DecoderLayer
 from src.embedding import PositionalEncoding, TokenEmbedding
 from src.encoder import Encoder, EncoderLayer
@@ -22,6 +24,103 @@ from src.tokenizer import (
     preprocess_pairs,
 )
 from src.transformer import Transformer
+
+
+def test_translation_dataset() -> None:
+    pairs = [
+        ("A small cat.", "Eine kleine Katze."),
+        ("Two dogs run across the field.", "Zwei Hunde laufen über das Feld."),
+        ("A child smiles.", "Ein Kind lächelt."),
+    ]
+
+    tokenizer = BPETokenizer()
+    tokenizer.train_from_pairs(
+        pairs,
+        vocab_size=100,
+        min_frequency=1,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        src_file = tmp_path / "train.en"
+        tgt_file = tmp_path / "train.de"
+
+        src_file.write_text(
+            "\n".join(source for source, _ in pairs),
+            encoding="utf-8",
+        )
+        tgt_file.write_text(
+            "\n".join(target for _, target in pairs),
+            encoding="utf-8",
+        )
+
+        dataset = TranslationDataset(
+            src_file,
+            tgt_file,
+            tokenizer,
+        )
+        samples = list(dataset)
+
+        assert len(samples) == len(pairs)
+        for source, decoder_input, labels in samples:
+            assert source.dtype == torch.long
+            assert decoder_input.dtype == torch.long
+            assert labels.dtype == torch.long
+
+            # target을 한 칸 이동해 Decoder 입력과 정답을 만들어야 함
+            assert decoder_input[0].item() == BOS_INDEX
+            assert labels[-1].item() == EOS_INDEX
+            assert torch.equal(decoder_input[1:], labels[:-1])
+
+        data_loader = DataLoader(
+            dataset,
+            batch_size=2,
+            collate_fn=collate_translation_batch,
+        )
+        source_batch, decoder_input_batch, label_batch = next(
+            iter(data_loader)
+        )
+
+        # batch별 최대 길이에 맞춰 padding된 shape 확인
+        assert source_batch.dim() == 2
+        assert decoder_input_batch.dim() == 2
+        assert label_batch.shape == decoder_input_batch.shape
+        assert source_batch.size(0) == 2
+        assert decoder_input_batch.size(0) == 2
+
+        for row, (source, _, _) in zip(source_batch, samples[:2]):
+            assert torch.equal(row[: source.size(0)], source)
+            assert torch.all(row[source.size(0) :] == PAD_INDEX)
+
+        for row, (_, decoder_input, _) in zip(
+            decoder_input_batch,
+            samples[:2],
+        ):
+            assert torch.equal(row[: decoder_input.size(0)], decoder_input)
+            assert torch.all(row[decoder_input.size(0) :] == PAD_INDEX)
+
+        for row, (_, _, labels) in zip(label_batch, samples[:2]):
+            assert torch.equal(row[: labels.size(0)], labels)
+            assert torch.all(row[labels.size(0) :] == PAD_INDEX)
+
+        # 생성한 batch를 Transformer에 그대로 입력할 수 있어야 함
+        model = Transformer(
+            vocab_size=tokenizer.vocab_size,
+            d_model=16,
+            num_heads=4,
+            d_ff=32,
+            num_layers=1,
+            dropout=0.0,
+            padding_index=tokenizer.pad_index,
+        )
+        logits, _, _, _ = model(source_batch, decoder_input_batch)
+        assert logits.shape == (
+            label_batch.size(0),
+            label_batch.size(1),
+            tokenizer.vocab_size,
+        )
+
+    print("TranslationDataset test passed")
 
 
 def test_tokenizer() -> None:
@@ -867,6 +966,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_translation_dataset()
     test_tokenizer()
     test_transformer()
     test_decoder()
