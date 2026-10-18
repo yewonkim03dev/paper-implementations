@@ -18,6 +18,8 @@ from .training import (
     LabelSmoothingLoss,
     TransformerLRScheduler,
     create_transformer_optimizer,
+    save_training_checkpoint,
+    train_epoch,
 )
 from .transformer import Transformer
 
@@ -41,4 +43,6 @@ __all__ = [
     "load_parallel_corpus",
     "normalize_text",
     "preprocess_pairs",
+    "save_training_checkpoint",
+    "train_epoch",
 ]

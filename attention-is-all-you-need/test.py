@@ -23,8 +23,96 @@ from src.tokenizer import (
     normalize_text,
     preprocess_pairs,
 )
-from src.training import LabelSmoothingLoss, create_transformer_optimizer
+from src.training import (
+    LabelSmoothingLoss,
+    create_transformer_optimizer,
+    save_training_checkpoint,
+    train_epoch,
+)
 from src.transformer import Transformer
+
+
+def test_train_epoch() -> None:
+    vocab_size = 16
+    model = Transformer(
+        vocab_size=vocab_size,
+        d_model=16,
+        num_heads=4,
+        d_ff=32,
+        num_layers=1,
+        dropout=0.0,
+        padding_index=PAD_INDEX,
+    )
+    loss_function = LabelSmoothingLoss(
+        smoothing=0.1,
+        padding_index=PAD_INDEX,
+    )
+    optimizer, scheduler = create_transformer_optimizer(
+        model.parameters(),
+        d_model=16,
+        warmup_steps=4,
+    )
+
+    batch = (
+        torch.tensor(
+            [
+                [4, 5, EOS_INDEX, PAD_INDEX],
+                [6, 7, 8, EOS_INDEX],
+            ]
+        ),
+        torch.tensor(
+            [
+                [BOS_INDEX, 9, PAD_INDEX],
+                [BOS_INDEX, 10, 11],
+            ]
+        ),
+        torch.tensor(
+            [
+                [9, EOS_INDEX, PAD_INDEX],
+                [10, 11, EOS_INDEX],
+            ]
+        ),
+    )
+    parameter = model.encoder.layers[0].self_attention.query_projection.weight
+    parameter_before_training = parameter.detach().clone()
+
+    average_loss = train_epoch(
+        model,
+        [batch, batch],
+        loss_function,
+        optimizer,
+        scheduler,
+        device="cpu",
+        log_interval=0,
+    )
+
+    assert average_loss > 0
+    assert scheduler.step_number == 2
+    assert not torch.equal(parameter, parameter_before_training)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        checkpoint_path = Path(tmp_dir) / "epoch_001.pt"
+        save_training_checkpoint(
+            checkpoint_path,
+            model,
+            optimizer,
+            scheduler,
+            epoch=1,
+            loss=average_loss,
+        )
+
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location="cpu",
+            weights_only=True,
+        )
+        assert checkpoint["epoch"] == 1
+        assert checkpoint["loss"] == average_loss
+        assert checkpoint["scheduler_state_dict"]["step_number"] == 2
+        assert "model_state_dict" in checkpoint
+        assert "optimizer_state_dict" in checkpoint
+
+    print("Train epoch test passed")
 
 
 def test_training_setup() -> None:
@@ -1051,6 +1139,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_train_epoch()
     test_training_setup()
     test_translation_dataset()
     test_tokenizer()
