@@ -11,7 +11,13 @@ from src.data import TranslationDataset, collate_translation_batch
 from src.decoder import Decoder, DecoderLayer
 from src.embedding import PositionalEncoding, TokenEmbedding
 from src.encoder import Encoder, EncoderLayer
+from src.evaluation import corpus_bleu
 from src.feed_forward import PositionwiseFeedForward
+from src.inference import (
+    beam_search_decode,
+    greedy_decode,
+    load_transformer_checkpoint,
+)
 from src.masks import create_causal_mask, create_padding_mask
 from src.tokenizer import (
     BOS_INDEX,
@@ -31,6 +37,104 @@ from src.training import (
     train_epoch,
 )
 from src.transformer import Transformer
+
+
+def test_inference_and_bleu() -> None:
+    vocab_size = 8
+    hidden_size = 4
+
+    class FakeEncoder(torch.nn.Module):
+        def forward(self, source_tokens, source_mask):
+            output = torch.zeros(
+                source_tokens.size(0),
+                source_tokens.size(1),
+                hidden_size,
+                device=source_tokens.device,
+            )
+            return output, []
+
+    class FakeDecoder(torch.nn.Module):
+        def forward(
+            self,
+            target_tokens,
+            encoder_output,
+            target_mask,
+            source_mask,
+        ):
+            output = torch.zeros(
+                target_tokens.size(0),
+                target_tokens.size(1),
+                hidden_size,
+                device=target_tokens.device,
+            )
+            return output, [], []
+
+    class FakeOutputProjection(torch.nn.Module):
+        def forward(self, decoder_output):
+            logits = torch.zeros(
+                *decoder_output.shape[:-1],
+                vocab_size,
+                device=decoder_output.device,
+            )
+            logits[..., EOS_INDEX] = 10.0
+            return logits
+
+    class FakeTransformer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1))
+            self.padding_index = PAD_INDEX
+            self.encoder = FakeEncoder()
+            self.decoder = FakeDecoder()
+            self.output_projection = FakeOutputProjection()
+
+    model = FakeTransformer()
+    source_tokens = torch.tensor(
+        [
+            [4, EOS_INDEX],
+            [5, EOS_INDEX],
+        ]
+    )
+
+    greedy_tokens = greedy_decode(
+        model,
+        source_tokens,
+        max_length=10,
+    )
+    assert torch.equal(
+        greedy_tokens,
+        torch.tensor(
+            [
+                [BOS_INDEX, EOS_INDEX],
+                [BOS_INDEX, EOS_INDEX],
+            ]
+        ),
+    )
+
+    beam_tokens = beam_search_decode(
+        model,
+        source_tokens[:1],
+        max_length=10,
+        beam_size=4,
+        length_penalty=0.6,
+    )
+    assert torch.equal(
+        beam_tokens,
+        torch.tensor([[BOS_INDEX, EOS_INDEX]]),
+    )
+
+    perfect_bleu = corpus_bleu(
+        ["A small cat is sitting."],
+        ["A small cat is sitting."],
+    )
+    imperfect_bleu = corpus_bleu(
+        ["A dog is running."],
+        ["A small cat is sitting."],
+    )
+    assert perfect_bleu == 100.0
+    assert 0.0 <= imperfect_bleu < perfect_bleu
+
+    print("Inference and BLEU test passed")
 
 
 def test_train_epoch() -> None:
@@ -129,6 +233,17 @@ def test_train_epoch() -> None:
         assert checkpoint["scheduler_state_dict"]["step_number"] == 2
         assert "model_state_dict" in checkpoint
         assert "optimizer_state_dict" in checkpoint
+
+        loaded_model = load_transformer_checkpoint(
+            checkpoint_path,
+            device="cpu",
+        )
+        assert loaded_model.config == model.config
+        loaded_parameter = (
+            loaded_model.encoder.layers[0]
+            .self_attention.query_projection.weight
+        )
+        assert torch.equal(loaded_parameter, parameter)
 
     print("Train epoch test passed")
 
@@ -1157,6 +1272,7 @@ def test_positional_encoding() -> None:
 
 
 if __name__ == "__main__":
+    test_inference_and_bleu()
     test_train_epoch()
     test_training_setup()
     test_translation_dataset()

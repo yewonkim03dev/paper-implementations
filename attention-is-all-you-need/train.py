@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data import TranslationDataset, collate_translation_batch
+from src.device import resolve_device
 from src.tokenizer import BPETokenizer, load_parallel_corpus
 from src.training import (
     LabelSmoothingLoss,
@@ -55,16 +56,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--log-interval", type=int, default=100)
     return parser.parse_args()
-
-
-def resolve_device(device_name: str) -> torch.device:
-    if device_name != "auto":
-        return torch.device(device_name)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
 
 
 def prepare_tokenizer(args: argparse.Namespace) -> BPETokenizer:

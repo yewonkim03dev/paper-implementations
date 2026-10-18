@@ -8,7 +8,7 @@
 
 ## 구현 상태
 
-구현 중. 기본 파일 구조를 만들었고, 논문을 읽으며 Transformer의 구성 요소를 하나씩 구현할 예정임.
+모델 구조와 학습에 필요한 기본 코드를 구현했다. 로컬에서는 작은 tensor와 문장으로 동작을 확인했고, 실제 데이터 학습은 Colab에서 진행할 예정이다.
 
 ## 구현할 구성 요소
 
@@ -18,18 +18,22 @@
 - Position-wise Feed-Forward Network
 - Encoder / Decoder
 - Transformer
-
-아직 실제 연산은 구현하지 않았음. 각 구성 요소를 구현한 뒤 작은 랜덤 tensor로 shape과 forward/backward 동작을 확인할 예정
+- BPE tokenizer와 병렬 코퍼스 스트리밍
+- 학습 및 검증 루프
+- Greedy / Beam Search decoding
+- BLEU 평가
 
 ## 프로젝트 구조
 
 ```text
 attention-is-all-you-need/
 ├── README.md
-├── src/                       # 모델 구현
+├── src/                       # 모델, 데이터, 학습 및 추론 코드
 ├── notebooks/
 │   └── train_colab.ipynb      # Colab 학습 및 실험
 ├── train.py                   # 학습 진입점
+├── translate.py               # 문장 번역
+├── evaluate.py                # BLEU 평가
 └── test.py                    # 로컬 검증
 ```
 
@@ -48,14 +52,38 @@ python test.py
 
 ## 학습
 
-학습 코드는 아직 구현하지 않았다. 이후 `train.py`를 학습 진입점으로 사용할 예정이다.
+source와 target은 같은 줄끼리 번역 쌍을 이루는 텍스트 파일을 사용한다. validation 파일은 생략할 수 있다.
 
 ```bash
-python train.py
+python train.py \
+  --train-source data/train.en \
+  --train-target data/train.de \
+  --validation-source data/valid.en \
+  --validation-target data/valid.de
 ```
+
+토크나이저가 없으면 학습 데이터로 새로 만든다. checkpoint는 epoch별로 저장하고, validation loss가 가장 낮은 모델은 `best.pt`에 저장한다.
+
+## 번역 및 평가
+
+```bash
+python translate.py "A man is walking." \
+  --checkpoint checkpoints/best.pt \
+  --tokenizer-path artifacts/tokenizer.json
+
+python evaluate.py \
+  --source data/test.en \
+  --target data/test.de \
+  --checkpoint checkpoints/best.pt \
+  --tokenizer-path artifacts/tokenizer.json
+```
+
+`evaluate.py`의 BLEU는 로컬 확인용이다. 논문 결과와 직접 비교할 때는 논문과 같은 tokenization 및 BLEU 설정을 맞춰야 한다.
 
 ## Colab
 
-로컬에서 모델 구조와 기본 동작을 확인한 뒤 GitHub에 푸시한다. 이후 `notebooks/train_colab.ipynb`에서 저장소를 클론 후 데이터셋 준비와 GPU 학습을 진행한다.
+로컬 변경사항을 GitHub에 푸시한 뒤 `notebooks/train_colab.ipynb`에서 저장소를 clone한다. 데이터셋과 Google Drive 경로를 지정한 다음 GPU 학습을 실행한다.
 
 ## 실험 결과
+
+아직 실제 데이터 학습 전이다.

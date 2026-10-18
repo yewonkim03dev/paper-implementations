@@ -262,6 +262,7 @@ def save_training_checkpoint(
         {
             "epoch": epoch,
             "loss": loss,
+            "model_config": getattr(model, "config", None),
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),

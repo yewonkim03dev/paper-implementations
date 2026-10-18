@@ -20,6 +20,16 @@ class Transformer(nn.Module):
         super().__init__()
 
         self.padding_index = padding_index
+        self.config = {
+            "vocab_size": vocab_size,
+            "d_model": d_model,
+            "num_heads": num_heads,
+            "d_ff": d_ff,
+            "num_layers": num_layers,
+            "dropout": dropout,
+            "max_len": max_len,
+            "padding_index": padding_index,
+        }
 
         self.encoder = Encoder(
             vocab_size,
