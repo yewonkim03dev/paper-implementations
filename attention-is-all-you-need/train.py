@@ -11,6 +11,7 @@ from src.tokenizer import BPETokenizer, load_parallel_corpus
 from src.training import (
     LabelSmoothingLoss,
     create_transformer_optimizer,
+    evaluate,
     save_training_checkpoint,
     train_epoch,
 )
@@ -21,6 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-source", type=Path, required=True)
     parser.add_argument("--train-target", type=Path, required=True)
+    parser.add_argument("--validation-source", type=Path)
+    parser.add_argument("--validation-target", type=Path)
     parser.add_argument(
         "--tokenizer-path",
         type=Path,
@@ -86,6 +89,11 @@ def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
 
+    if (args.validation_source is None) != (args.validation_target is None):
+        raise ValueError(
+            "validation-source and validation-target must be provided together"
+        )
+
     device = resolve_device(args.device)
     tokenizer = prepare_tokenizer(args)
 
@@ -103,6 +111,23 @@ def main() -> None:
         pin_memory=device.type == "cuda",
         persistent_workers=args.num_workers > 0,
     )
+
+    validation_loader = None
+    if args.validation_source is not None:
+        validation_dataset = TranslationDataset(
+            args.validation_source,
+            args.validation_target,
+            tokenizer,
+            max_length=args.max_length,
+        )
+        validation_loader = DataLoader(
+            validation_dataset,
+            batch_size=args.batch_size,
+            collate_fn=collate_translation_batch,
+            num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
+            persistent_workers=args.num_workers > 0,
+        )
 
     model = Transformer(
         vocab_size=tokenizer.vocab_size,
@@ -127,8 +152,10 @@ def main() -> None:
     )
 
     print(f"device={device} vocab_size={tokenizer.vocab_size}")
+    best_validation_loss = float("inf")
+
     for epoch in range(1, args.epochs + 1):
-        average_loss = train_epoch(
+        training_loss = train_epoch(
             model,
             data_loader,
             loss_function,
@@ -137,7 +164,22 @@ def main() -> None:
             device,
             log_interval=args.log_interval,
         )
-        print(f"epoch={epoch} loss={average_loss:.4f}")
+
+        validation_loss = None
+        if validation_loader is not None:
+            validation_loss = evaluate(
+                model,
+                validation_loader,
+                loss_function,
+                device,
+            )
+            print(
+                f"epoch={epoch} "
+                f"train_loss={training_loss:.4f} "
+                f"validation_loss={validation_loss:.4f}"
+            )
+        else:
+            print(f"epoch={epoch} train_loss={training_loss:.4f}")
 
         checkpoint_path = args.checkpoint_dir / f"epoch_{epoch:03d}.pt"
         save_training_checkpoint(
@@ -146,8 +188,22 @@ def main() -> None:
             optimizer,
             scheduler,
             epoch=epoch,
-            loss=average_loss,
+            loss=training_loss,
         )
+
+        if (
+            validation_loss is not None
+            and validation_loss < best_validation_loss
+        ):
+            best_validation_loss = validation_loss
+            save_training_checkpoint(
+                args.checkpoint_dir / "best.pt",
+                model,
+                optimizer,
+                scheduler,
+                epoch=epoch,
+                loss=validation_loss,
+            )
 
 
 if __name__ == "__main__":

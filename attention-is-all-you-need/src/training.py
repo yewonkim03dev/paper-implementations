@@ -207,6 +207,43 @@ def train_epoch(
     return total_loss / total_tokens
 
 
+def evaluate(
+    model: nn.Module,
+    batches: Iterable[TranslationBatch],
+    loss_function: LabelSmoothingLoss,
+    device: torch.device | str,
+) -> float:
+    model.eval()
+    total_loss = 0.0
+    total_tokens = 0
+
+    # validation에서는 gradient를 계산하거나 parameter를 갱신하지 않는다.
+    with torch.no_grad():
+        for source, decoder_input, labels in batches:
+            # (B, S_source), (B, S_target), (B, S_target)
+            source = source.to(device)
+            decoder_input = decoder_input.to(device)
+            labels = labels.to(device)
+
+            non_padding_tokens = labels != loss_function.padding_index
+            token_count = int(non_padding_tokens.sum().item())
+            if token_count == 0:
+                continue
+
+            # (B, S_target) -> (B, S_target, vocab_size)
+            logits, _, _, _ = model(source, decoder_input)
+            loss = loss_function(logits, labels)
+
+            total_loss += loss.item() * token_count
+            total_tokens += token_count
+
+    if total_tokens == 0:
+        raise RuntimeError("No non-padding validation batches were produced")
+
+    # train loss와 동일하게 padding 제외 token 기준 평균을 반환한다.
+    return total_loss / total_tokens
+
+
 def save_training_checkpoint(
     path: str | Path,
     model: nn.Module,

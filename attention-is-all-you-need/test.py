@@ -26,6 +26,7 @@ from src.tokenizer import (
 from src.training import (
     LabelSmoothingLoss,
     create_transformer_optimizer,
+    evaluate,
     save_training_checkpoint,
     train_epoch,
 )
@@ -89,6 +90,23 @@ def test_train_epoch() -> None:
     assert average_loss > 0
     assert scheduler.step_number == 2
     assert not torch.equal(parameter, parameter_before_training)
+
+    # validation에서는 parameter와 gradient가 변경되지 않아야 함
+    optimizer.zero_grad(set_to_none=True)
+    parameter_before_validation = parameter.detach().clone()
+    validation_loss = evaluate(
+        model,
+        [batch],
+        loss_function,
+        device="cpu",
+    )
+    assert validation_loss > 0
+    assert not model.training
+    assert torch.equal(parameter, parameter_before_validation)
+    assert all(
+        model_parameter.grad is None
+        for model_parameter in model.parameters()
+    )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         checkpoint_path = Path(tmp_dir) / "epoch_001.pt"

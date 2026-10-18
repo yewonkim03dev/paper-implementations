@@ -18,6 +18,7 @@ from .training import (
     LabelSmoothingLoss,
     TransformerLRScheduler,
     create_transformer_optimizer,
+    evaluate,
     save_training_checkpoint,
     train_epoch,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "UNK_TOKEN",
     "collate_translation_batch",
     "create_transformer_optimizer",
+    "evaluate",
     "load_parallel_corpus",
     "normalize_text",
     "preprocess_pairs",
