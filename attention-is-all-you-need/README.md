@@ -82,7 +82,9 @@ python evaluate.py \
 
 ## Colab
 
-로컬 변경사항을 GitHub에 푸시한 뒤 `notebooks/train_colab.ipynb`에서 저장소를 clone한다. 데이터셋과 Google Drive 경로를 지정한 다음 GPU 학습을 실행한다.
+`notebooks/train_colab.ipynb`를 Colab에서 열고 위에서부터 실행하면 된다. 노트북은 구현 브랜치를 가져온 뒤 Multi30K 영어-독일어 데이터를 내려받고, tokenizer와 checkpoint를 Google Drive에 저장한다. 학습이 끝나면 예시 문장 번역과 test set 일부의 BLEU 평가까지 이어서 실행한다.
+
+기본값은 전체 흐름을 확인하기 위한 축소 모델이다. 원 논문의 WMT14 학습 결과를 그대로 재현하는 설정은 아니다.
 
 ## 실험 결과
 
