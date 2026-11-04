@@ -6,9 +6,9 @@
 
 ## Implementations
 
-| 논문                      | 상태    |
-| ------------------------- | ------- |
-| Attention Is All You Need | 구현 중 |
+| 논문                      | 상태      |
+| ------------------------- | --------- |
+| Attention Is All You Need | 구현 완료 |
 
 ## Workflow
 
