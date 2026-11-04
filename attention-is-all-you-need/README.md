@@ -124,15 +124,15 @@ test set의 앞 100문장을 greedy decoding(`beam_size=1`)으로 번역했을 �
 
 > Eine Gruppe von Menschen steht vor einem Gebäude.
 
-테스트 데이터의 앞부분을 번역한 결과는 다음과 같습니다. 표가 너무 길어지는 문장은 Colab 출력과 같이 일부를 생략했습니다.
+테스트 데이터의 앞부분을 번역한 결과는 다음과 같습니다.
 
-| 영어 원문 | 독일어 정답 | 모델 번역 |
-| --- | --- | --- |
-| A man in an orange hat starring at something. | Ein Mann mit einem orangefarbenen Hut, der etwas anstarrt. | Ein Mann mit einer orangen Kopfbedeckung steht... |
-| A Boston Terrier is running on lush green grass in front of a white fence. | Ein Boston Terrier läuft über saftig-grünes Gras vor einem weißen Zaun. | Ein Zaun läuft vor einem weißen Zaun auf einer... |
-| A girl in karate uniform breaking a stick with a front kick. | Ein Mädchen in einem Karateanzug bricht ein Brett mit einem Tritt. | Ein Mädchen in einem Karateanzug läuft vor ein... |
-| Five people wearing winter jackets and helmets stand in the snow, with snowmobiles in the background. | Fünf Leute in Winterjacken und mit Helmen stehen im Schnee mit Schneemobilen im Hintergrund. | Fünf Personen mit Helmen und Jacken stehen im... |
-| People are fixing the roof of a house. | Leute reparieren das Dach eines Hauses. | Personen befinden sich eines Hauses. |
+| index | 영어 원문 | 독일어 정답 | 모델 번역 |
+| --- | --- | --- | --- |
+| 0 | A man in an orange hat starring at something. | Ein Mann mit einem orangefarbenen Hut, der etwas anstarrt. | Ein Mann mit einer orangen Kopfbedeckung steht an etwas. |
+| 1 | A Boston Terrier is running on lush green grass in front of a white fence. | Ein Boston Terrier läuft über saftig-grünes Gras vor einem weißen Zaun. | Ein Zaun läuft vor einem weißen Zaun auf einer grünen Wiese. |
+| 2 | A girl in karate uniform breaking a stick with a front kick. | Ein Mädchen in einem Karateanzug bricht ein Brett mit einem Tritt. | Ein Mädchen in einem Karateanzug läuft vor einem Karate. |
+| 3 | Five people wearing winter jackets and helmets stand in the snow, with snowmobiles in the background. | Fünf Leute in Winterjacken und mit Helmen stehen im Schnee mit Schneemobilen im Hintergrund. | Fünf Personen mit Helmen und Jacken stehen im Hintergrund. |
+| 4 | People are fixing the roof of a house. | Leute Reparieren das Dach eines Hauses. | Personen befinden sich eines Hauses. |
 
 10 epoch 동안 train loss와 validation loss가 함께 감소했으며, 이 범위에서는 validation loss가 다시 증가하는 모습은 나타나지 않았습니다. 아직 뚜렷한 overfitting은 없다고 볼 수 있습니다.
 
