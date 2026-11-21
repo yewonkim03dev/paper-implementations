@@ -1,0 +1,57 @@
+from torch import Tensor, nn
+
+
+class AuthorSASRecBlock(nn.Module):
+    """저자 공개 코드(https://github.com/kang205/SASRec)를 참고한 self-attention block"""
+
+    def __init__(
+        self,
+        hidden_dim: int = 50,
+        num_heads: int = 1,
+        dropout: float = 0.2,
+    ) -> None:
+        super().__init__()
+
+        # attention LayerNorm
+        self.attention_norm = nn.LayerNorm(hidden_dim)
+
+        # MultiheadAttention(batch_first=True) (B, S, D)
+        self.attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
+
+        #  FFN LayerNorm
+        self.ffn_norm = nn.LayerNorm(hidden_dim)
+
+        # Linear -> ReLU -> Dropout -> Linear -> Dropout
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(
+        self,
+        x: Tensor,
+        causal_mask: Tensor,
+        padding_mask: Tensor,
+    ) -> Tensor:
+        # x: (B, S, D)
+        # causal_mask: (S, S), True 위치 참조 차단
+        # padding_mask: (B, S), True 위치 padding
+
+        # Q Norm - (B, S, D)
+        query = self.attention_norm(x)
+
+        # Q = 정규화 입력, K,V = 기존 입력
+        attn_output, _ = self.attention(query=query, key=x, value=x, attn_mask=causal_mask, key_padding_mask=padding_mask, need_weights=False)
+
+        # 정규화 Q와 residual conn
+        x = query + attn_output
+
+        # FFN 앞 LayerNorm과 정규화한 입력 residual conn
+        ffn_input = self.ffn_norm(x)
+        x = ffn_input + self.ffn(ffn_input)
+        # padding 위치 출력 0
+        # return (B, S, D)
+        return x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
