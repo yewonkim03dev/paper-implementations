@@ -1,6 +1,65 @@
 from torch import Tensor, nn
 
 
+class PaperSASRecBlock(nn.Module):
+    """논문 III-C의 self-attention block"""
+
+    def __init__(
+        self,
+        hidden_dim: int = 50,
+        num_heads: int = 1,
+        dropout: float = 0.2,
+    ) -> None:
+        super().__init__()
+
+        self.attention_norm = nn.LayerNorm(hidden_dim)
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=0.0,
+            batch_first=True,
+        )
+        self.attention_output_dropout = nn.Dropout(dropout)
+
+        self.ffn_norm = nn.LayerNorm(hidden_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.ffn_output_dropout = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        x: Tensor,
+        causal_mask: Tensor,
+        padding_mask: Tensor,
+    ) -> Tensor:
+        # x: (B, S, D)
+        # causal_mask: (S, S), True 위치 참조 차단
+        # padding_mask: (B, S), True 위치 padding
+
+        # Q, K, V 정규화
+        normalized_x = self.attention_norm(x)
+        query = key = value = normalized_x
+
+        attn_output, _ = self.attention(query=query, key=key, value=value, attn_mask=causal_mask, key_padding_mask=padding_mask, need_weights=False)
+
+        # dropout(attn_output) + x residual
+        x = x + self.attention_output_dropout(attn_output)
+
+        # FFN 적용 이전 LayerNorm
+        ffn_input = self.ffn_norm(x)
+        ffn_output = self.ffn(ffn_input)
+
+        # FFN 출력 dropout + residual conn
+        x = x + self.ffn_output_dropout(ffn_output)
+
+        # return (B, S, D)
+        # padding 위치 출력 0 처리
+        return x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+
+
 class AuthorSASRecBlock(nn.Module):
     """저자 공개 코드(https://github.com/kang205/SASRec)를 참고한 self-attention block"""
 
