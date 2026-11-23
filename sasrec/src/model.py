@@ -201,3 +201,18 @@ class SASRec(nn.Module):
         # padding 위치 출력 0 처리
         # return (B, S, D)
         return x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+
+    def score_items(self, features: Tensor, candidate_ids: Tensor) -> Tensor:
+        # features: (B, S, D) 학습 / (B, D) 평가
+        # candidate_ids: (B, S, K) 학습 / (B, K) 평가
+
+        # (B, S, K, D) or (B, K, D)
+        candidate_embeddings = self.item_embedding(candidate_ids)
+
+        # (B, S, D) -> (B, S, 1, D) or (B, D) -> (B, 1, D)
+        features = features.unsqueeze(-2)
+
+        # (B, S, 1, D) @ (B, S, D, K) -> (B, S, 1, K) -> (B, S, K)
+        scores = (features @ candidate_embeddings.transpose(-1, -2)).squeeze(-2)
+        # return (B, S, K) 학습 / (B, K) 평가
+        return scores
