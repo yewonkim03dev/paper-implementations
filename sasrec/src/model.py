@@ -158,6 +158,7 @@ class SASRec(nn.Module):
             block_class = AuthorSASRecBlock
         else:
             raise ValueError(f"알 수 없는 SASRec block 설정값: {block_variant}")
+        self.block_variant = block_variant
 
         self.blocks = nn.ModuleList(
             block_class(hidden_dim, num_heads, dropout, eps=eps) for _ in range(num_blocks)
@@ -165,3 +166,38 @@ class SASRec(nn.Module):
 
         # 마지막 LayerNorm
         self.norm = nn.LayerNorm(normalized_shape=hidden_dim, eps=eps if final_norm_eps is None else final_norm_eps,)
+
+    def forward(self, item_ids: Tensor) -> Tensor:
+        # item_ids: (B, S), 0으로 왼쪽 padding, S <= max_len
+
+        # padding mask, causal mask
+        B, S = item_ids.shape
+        # (B, S)
+        padding_mask = (item_ids == 0)
+        # (S, S)
+        causal_mask = torch.triu(torch.ones(S, S, device=item_ids.device, dtype=torch.bool), diagonal=1)
+
+        # item embedding << sqrt(hidden_dim) 스케일링 (B, S) -> (B, S, D)
+        # 저자 코드에서는 임베딩에 sqrt(d_model) 을 곱함. 저자 코드 모드일때만 곱해줌 (아마도 트랜스포머 관례를 따른것 같다_트랜스포머 논문 3.4)
+        x = self.item_embedding(item_ids) * (math.sqrt(self.item_embedding.embedding_dim) if self.block_variant == "author" else 1.0)
+
+        # position embedding 합산과 dropout
+        # zero-base tensor idx
+        # max_len만큼 left padding case(고정 길이), 배치 내 가장 긴 시퀀스만큼만 left padding case(가변 길이) 지원 = (max_len - S, max_len)
+        # position id는 max_len 기준 오른쪽 정렬
+        max_len = self.position_embedding.num_embeddings
+        position_ids = torch.arange(max_len - S, max_len, device=item_ids.device)
+        x = self.embedding_dropout(x + self.position_embedding(position_ids))
+
+        # padding 위치 출력 0으로 마스킹
+        x = x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+
+        # self.blocks 순차 적용 (B, S, D) -> (B, S, D)
+        for block in self.blocks:
+            x =  block(x, causal_mask=causal_mask, padding_mask=padding_mask)
+        # 마지막 LayerNorm
+        x = self.norm(x)
+
+        # padding 위치 출력 0 처리
+        # return (B, S, D)
+        return x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
