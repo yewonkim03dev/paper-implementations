@@ -1,3 +1,7 @@
+import math
+from typing import Literal
+
+import torch
 from torch import Tensor, nn
 
 
@@ -9,10 +13,12 @@ class PaperSASRecBlock(nn.Module):
         hidden_dim: int = 50,
         num_heads: int = 1,
         dropout: float = 0.2,
+        *,
+        eps: float = 1e-8,
     ) -> None:
         super().__init__()
 
-        self.attention_norm = nn.LayerNorm(hidden_dim, eps=1e-8)
+        self.attention_norm = nn.LayerNorm(hidden_dim, eps=eps)
         self.attention = nn.MultiheadAttention(
             embed_dim=hidden_dim,
             num_heads=num_heads,
@@ -21,7 +27,7 @@ class PaperSASRecBlock(nn.Module):
         )
         self.attention_output_dropout = nn.Dropout(dropout)
 
-        self.ffn_norm = nn.LayerNorm(hidden_dim, eps=1e-8)
+        self.ffn_norm = nn.LayerNorm(hidden_dim, eps=eps)
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -68,17 +74,19 @@ class AuthorSASRecBlock(nn.Module):
         hidden_dim: int = 50,
         num_heads: int = 1,
         dropout: float = 0.2,
+        *,
+        eps: float = 1e-8,
     ) -> None:
         super().__init__()
 
         # attention LayerNorm
-        self.attention_norm = nn.LayerNorm(hidden_dim, eps=1e-8)
+        self.attention_norm = nn.LayerNorm(hidden_dim, eps=eps)
 
         # MultiheadAttention(batch_first=True) (B, S, D)
         self.attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
 
         #  FFN LayerNorm
-        self.ffn_norm = nn.LayerNorm(hidden_dim, eps=1e-8)
+        self.ffn_norm = nn.LayerNorm(hidden_dim, eps=eps)
 
         # Linear -> ReLU -> Dropout -> Linear -> Dropout
         self.ffn = nn.Sequential(
@@ -114,3 +122,46 @@ class AuthorSASRecBlock(nn.Module):
         # padding 위치 출력 0
         # return (B, S, D)
         return x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+
+
+class SASRec(nn.Module):
+    """Item/position embedding과 SASRec block stack"""
+
+    def __init__(
+        self,
+        num_items: int,
+        max_len: int = 200,
+        hidden_dim: int = 50,
+        num_blocks: int = 2,
+        num_heads: int = 1,
+        dropout: float = 0.2,
+        *,
+        block_variant: Literal["paper", "author"] = "author",
+        eps: float = 1e-8,
+        final_norm_eps: float | None = None,
+    ) -> None:
+        super().__init__()
+
+        # num_items: padding을 제외한 item 수, 실제 item ID 1 ~ num_items
+        # 임베딩 테이블에서 패딩 전용으로 쓸 인덱스 = 0. 아이템 시퀀스에서 0인 부분은 패딩처리
+        self.item_embedding = nn.Embedding(num_embeddings=num_items + 1, embedding_dim=hidden_dim, padding_idx=0)
+
+        # 학습 가능한 position Embedding(max_len, hidden_dim)
+        self.position_embedding = nn.Embedding(max_len, hidden_dim)
+
+        # 임베딩 드롭아웃
+        self.embedding_dropout = nn.Dropout(dropout)
+
+        if block_variant == "paper":
+            block_class = PaperSASRecBlock
+        elif block_variant == "author":
+            block_class = AuthorSASRecBlock
+        else:
+            raise ValueError(f"알 수 없는 SASRec block 설정값: {block_variant}")
+
+        self.blocks = nn.ModuleList(
+            block_class(hidden_dim, num_heads, dropout, eps=eps) for _ in range(num_blocks)
+        )
+
+        # 마지막 LayerNorm
+        self.norm = nn.LayerNorm(normalized_shape=hidden_dim, eps=eps if final_norm_eps is None else final_norm_eps,)
