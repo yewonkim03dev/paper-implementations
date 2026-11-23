@@ -12,7 +12,7 @@ class PaperSASRecBlock(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.attention_norm = nn.LayerNorm(hidden_dim)
+        self.attention_norm = nn.LayerNorm(hidden_dim, eps=1e-8)
         self.attention = nn.MultiheadAttention(
             embed_dim=hidden_dim,
             num_heads=num_heads,
@@ -21,7 +21,7 @@ class PaperSASRecBlock(nn.Module):
         )
         self.attention_output_dropout = nn.Dropout(dropout)
 
-        self.ffn_norm = nn.LayerNorm(hidden_dim)
+        self.ffn_norm = nn.LayerNorm(hidden_dim, eps=1e-8)
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -72,13 +72,13 @@ class AuthorSASRecBlock(nn.Module):
         super().__init__()
 
         # attention LayerNorm
-        self.attention_norm = nn.LayerNorm(hidden_dim)
+        self.attention_norm = nn.LayerNorm(hidden_dim, eps=1e-8)
 
         # MultiheadAttention(batch_first=True) (B, S, D)
         self.attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
 
         #  FFN LayerNorm
-        self.ffn_norm = nn.LayerNorm(hidden_dim)
+        self.ffn_norm = nn.LayerNorm(hidden_dim, eps=1e-8)
 
         # Linear -> ReLU -> Dropout -> Linear -> Dropout
         self.ffn = nn.Sequential(
