@@ -37,7 +37,12 @@ class SASRecTrainDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
             if len(seen_items) == num_items:
                 continue
 
-            # 최근 max_len + 1개와 negative에서 제외할 전체 학습 이력
+            """
+            학습 가능한 사용자당 인덱스 하나
+            학습 이력 [1, 2, 3, 8, 12], max_len=2
+            최근 3개 [3, 8, 12] 보관
+            negative 제외 목록은 전체 이력 {1, 2, 3, 8, 12}
+            """
             self.histories.append((item_ids[-(max_len + 1):], seen_items))
 
         if not self.histories:
@@ -53,7 +58,7 @@ class SASRecTrainDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
         input_ids = item_ids[:-1]
         positive_ids = item_ids[1:]
 
-        # 유효 위치마다 미관측 아이템 하나를 균등 추출
+        # 샘플 조회마다 유효 위치별 미관측 아이템 하나씩 균등 추출
         negative_ids = []
         for _ in positive_ids:
             negative_id = random.randint(1, self.num_items)
@@ -61,7 +66,12 @@ class SASRecTrainDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
                 negative_id = random.randint(1, self.num_items)
             negative_ids.append(negative_id)
 
-        # 세 텐서 모두 (S,) = (max_len,)
+        """
+        학습 이력 [3, 8, 12], max_len=4, num_items=14
+        입력      [0, 0, 3,  8]
+        positive  [0, 0, 8, 12]
+        negative  [0, 0, 6, 14] (추출 예시)
+        """
         padding = [0] * (self.max_len - len(input_ids))
         return (
             torch.tensor(padding + input_ids, dtype=torch.long),
