@@ -5,6 +5,38 @@ import torch
 from torch import Tensor, nn
 
 
+def _build_attention_mask(
+    causal_mask: Tensor,
+    padding_mask: Tensor,
+    num_heads: int,
+) -> Tensor:
+    """causal mask와 padding mask를 결합하고 padding query 행의 all masked NaN을 방지"""
+    # causal_mask (S, S) True 위치(미래) 참조 차단
+    # padding_mask (B, S) True 위치(padding) 참조 차단
+    seq_len = causal_mask.size(0)
+
+    # (B, S, S) 미래 위치 또는 padding key 차단
+    # causal_mask(S, S) -> (1, S, S), padding_mask(B, S) -> (B, 1, S)
+    # 브로드캐스팅 + OR => (B, S, S), True 위치(미래 or padding) 참조 차단
+    # 이 시점까지는 패딩 + causal 때문에 일부 행은 완전히 False -> 무시되는 행이 있을 수 있음
+    attn_mask = causal_mask.unsqueeze(0) | padding_mask.unsqueeze(1)
+
+    # 왼쪽 padding query는 모든 key가 막혀 softmax(-inf, ..., -inf) -> NaN이 될 수 있으니까
+    # padding query 행에 한해 대각선 (t, t)만 열어둠 (출력은 블록 끝에서 0으로 마스킹됨)
+
+    # 대각만 True인 단위행렬 생성, (1, S, S)
+    diag_mask = torch.eye(seq_len, device=causal_mask.device, dtype=torch.bool).unsqueeze(0)
+
+    # padding mask(B, S) -> (B, S, 1) -> 대각선 행렬이랑 원소별 AND
+    # => AND연산에서 브로드캐스팅 발생하면서 padding mask값이 Key축을 따라 복사, AND로 차단을 해제해야 하는 위치만 True가 됨
+    # NOT으로 뒤집고(차단 해제 셀만 F로 만듬) -> AND 적용 -> 대각선 칸만 False로 차단해제됨
+    attn_mask = attn_mask & ~(padding_mask.unsqueeze(-1) & diag_mask)
+    if num_heads == 1:
+        return attn_mask
+    # MultiheadAttention 3D attn_mask 규격: (B * num_heads, S, S)
+    return attn_mask.repeat_interleave(num_heads, dim=0)
+
+
 class PaperSASRecBlock(nn.Module):
     """논문 III-C의 self-attention block"""
 
@@ -49,7 +81,8 @@ class PaperSASRecBlock(nn.Module):
         normalized_x = self.attention_norm(x)
         query = key = value = normalized_x
 
-        attn_output, _ = self.attention(query=query, key=key, value=value, attn_mask=causal_mask, key_padding_mask=padding_mask, need_weights=False)
+        attn_mask = _build_attention_mask(causal_mask, padding_mask, self.attention.num_heads)
+        attn_output, _ = self.attention(query=query, key=key, value=value, attn_mask=attn_mask, need_weights=False)
 
         # dropout(attn_output) + x residual
         x = x + self.attention_output_dropout(attn_output)
@@ -111,7 +144,8 @@ class AuthorSASRecBlock(nn.Module):
         query = self.attention_norm(x)
 
         # Q = 정규화 입력, K,V = 기존 입력
-        attn_output, _ = self.attention(query=query, key=x, value=x, attn_mask=causal_mask, key_padding_mask=padding_mask, need_weights=False)
+        attn_mask = _build_attention_mask(causal_mask, padding_mask, self.attention.num_heads)
+        attn_output, _ = self.attention(query=query, key=x, value=x, attn_mask=attn_mask, need_weights=False)
 
         # 정규화 Q와 residual conn
         x = query + attn_output
