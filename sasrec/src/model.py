@@ -201,6 +201,27 @@ class SASRec(nn.Module):
         # 마지막 LayerNorm
         self.norm = nn.LayerNorm(normalized_shape=hidden_dim, eps=eps if final_norm_eps is None else final_norm_eps,)
 
+        # 논문/저자 코드 비교 시 초기화를 통제 변인으로 고정하고 초기 logit 포화를 방지
+        # 논문 버전, 저자 코드 버전 둘다 xavier초기화 사용
+        self.apply(self._init_weights)
+
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        if isinstance(module, nn.Embedding):
+            nn.init.xavier_uniform_(module.weight)
+            if module.padding_idx is not None:
+                with torch.no_grad():
+                    module.weight[module.padding_idx].zero_()
+        elif isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.MultiheadAttention):
+            if module.in_proj_weight is not None:
+                nn.init.xavier_uniform_(module.in_proj_weight)
+            if module.in_proj_bias is not None:
+                nn.init.zeros_(module.in_proj_bias)
+
     def forward(self, item_ids: Tensor) -> Tensor:
         # item_ids: (B, S), 0으로 왼쪽 padding, 1 <= S <= max_len
         if item_ids.ndim != 2:
