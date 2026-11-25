@@ -168,10 +168,15 @@ class SASRec(nn.Module):
         self.norm = nn.LayerNorm(normalized_shape=hidden_dim, eps=eps if final_norm_eps is None else final_norm_eps,)
 
     def forward(self, item_ids: Tensor) -> Tensor:
-        # item_ids: (B, S), 0으로 왼쪽 padding, S <= max_len
+        # item_ids: (B, S), 0으로 왼쪽 padding, 1 <= S <= max_len
+        if item_ids.ndim != 2:
+            raise ValueError(f"item_ids는 2차원 (B, S) 텐서여야 함: {tuple(item_ids.shape)}")
 
         # padding mask, causal mask
         B, S = item_ids.shape
+        max_len = self.position_embedding.num_embeddings
+        if S < 1 or S > max_len:
+            raise ValueError(f"시퀀스 길이는 1 이상 {max_len} 이하여야 함: {S}")
         # (B, S)
         padding_mask = (item_ids == 0)
         # (S, S)
@@ -185,7 +190,6 @@ class SASRec(nn.Module):
         # zero-base tensor idx
         # max_len만큼 left padding case(고정 길이), 배치 내 가장 긴 시퀀스만큼만 left padding case(가변 길이) 지원 = (max_len - S, max_len)
         # position id는 max_len 기준 오른쪽 정렬
-        max_len = self.position_embedding.num_embeddings
         position_ids = torch.arange(max_len - S, max_len, device=item_ids.device)
         x = self.embedding_dropout(x + self.position_embedding(position_ids))
 
