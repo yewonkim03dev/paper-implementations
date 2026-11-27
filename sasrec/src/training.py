@@ -325,7 +325,11 @@ def evaluate(
 
             all_ranks.append(batch_ranks.cpu())
 
+    # 배치별 1차원 정답 순위 텐서를 이어 붙여 전체 평가 사용자 순위 생성
+    # [(B1,), (B2,), ...] -> (전체 평가 사용자 수,)
     ranks = torch.cat(all_ranks, dim=0)
+
+    # 전체 평가 사용자 기준 HR@K와 NDCG@K 계산
     return RankingMetrics(
         hr=hit_rate_at_k(ranks, k=k),
         ndcg=ndcg_at_k(ranks, k=k),
