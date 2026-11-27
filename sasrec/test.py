@@ -1,16 +1,44 @@
 """Local validation entry point for the SASRec implementation."""
 
-import torch
+import math
+from pathlib import Path
+import tempfile
 
+import torch
+from torch.utils.data import DataLoader
+
+from src.data import load_sasrec_interactions, split_user_histories
+from src.dataset import (
+    SASRecTrainDataset,
+    create_sasrec_collate_fn,
+    pad_sequences_left,
+)
+from src.metrics import (
+    compute_ranking_metrics,
+    compute_target_ranks,
+    hit_rate_at_k,
+    ndcg_at_k,
+)
 from src.model import (
     AuthorSASRecBlock,
     PaperSASRecBlock,
     SASRec,
     _build_attention_mask,
 )
+from src.training import (
+    compute_bce_loss,
+    create_sasrec_optimizer,
+    evaluate,
+    extract_model_config,
+    load_model_checkpoint,
+    save_training_checkpoint,
+    set_seed,
+    train_epoch,
+)
 
 
 def test_attention_mask() -> None:
+    # 결합 attention mask가 padding query의 대각선만 열고 미래/padding key를 차단하는지 확인
     causal_mask = torch.triu(torch.ones(4, 4, dtype=torch.bool), diagonal=1)
     padding_mask = torch.tensor(
         [
@@ -49,6 +77,7 @@ def test_attention_mask() -> None:
 
 
 def test_block_padding_isolation_and_need_weights() -> None:
+    # Paper/Author 블록에서 padding 입력 격리와 need_weights=True 경로의 NaN 방지를 확인
     torch.manual_seed(0)
     causal_mask = torch.triu(torch.ones(4, 4, dtype=torch.bool), diagonal=1)
     padding_mask = torch.tensor(
@@ -99,6 +128,7 @@ def test_block_padding_isolation_and_need_weights() -> None:
 
 
 def test_sasrec_padding_forward_backward_no_nan() -> None:
+    # 왼쪽 패딩 및 전체 패딩 배치에서 forward/backward 시 NaN 없이 동작하는지 확인
     left_padded = torch.tensor(
         [
             [0, 0, 0, 1, 2, 3],
@@ -138,7 +168,220 @@ def test_sasrec_padding_forward_backward_no_nan() -> None:
     print("SASRec padding forward/backward test passed")
 
 
+def test_sasrec_model_contracts() -> None:
+    # Xavier 초기화(0번 패딩 유지), causality, 고정/가변 길이 일치, 입력 길이 검증, score_items 확인
+    for variant in ("paper", "author"):
+        torch.manual_seed(42)
+        model = SASRec(
+            num_items=30,
+            max_len=8,
+            hidden_dim=16,
+            num_blocks=2,
+            num_heads=2,
+            dropout=0.0,
+            block_variant=variant,
+        )
+        model.eval()
+
+        # padding_idx=0 행은 초기화 후에도 정확히 0이어야 함
+        assert torch.all(model.item_embedding.weight[0] == 0.0)
+        assert model.item_embedding.weight[1:].abs().max().item() > 0.0
+
+        # 미래 시점 토큰 변경이 과거 시점 출력에 영향을 주지 않아야 함(causality)
+        seq_a = torch.tensor([[0, 0, 1, 2, 3, 4]])
+        seq_b = torch.tensor([[0, 0, 1, 2, 9, 4]])
+        assert torch.allclose(model(seq_a)[:, :4], model(seq_b)[:, :4], atol=0.0)
+
+        # 고정 길이(max_len) 왼쪽 패딩과 가변 길이 입력의 유효 위치 출력이 일치해야 함
+        fixed_seq = torch.tensor([[0, 0, 0, 0, 1, 2, 3, 4]])
+        dynamic_seq = torch.tensor([[1, 2, 3, 4]])
+        assert torch.allclose(model(fixed_seq)[:, -4:], model(dynamic_seq), atol=1e-6)
+
+        # 학습용 (B, S, K)와 평가용 (B, K) 및 전체 아이템 (C,) 채점 shape 확인
+        features = model(seq_a)
+        assert model.score_items(features, torch.randint(1, 31, (1, 6, 2))).shape == (1, 6, 2)
+        assert model.score_items(features[:, -1, :], torch.randint(1, 31, (1, 5))).shape == (1, 5)
+        assert model.score_items(features[:, -1, :], torch.arange(1, 31)).shape == (1, 30)
+
+        # 잘못된 차원이나 max_len 초과 시퀀스는 ValueError를 발생시켜야 함
+        for bad_input in (
+            torch.tensor([1, 2, 3]),
+            torch.empty(1, 0, dtype=torch.long),
+            torch.ones(1, 9, dtype=torch.long),
+        ):
+            try:
+                model(bad_input)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"Expected ValueError for shape {tuple(bad_input.shape)}")
+
+    print("SASRec model contracts test passed")
+
+
+def test_data_and_dataset_padding() -> None:
+    # 상호작용 로딩/분할과 전체 이력 기준 negative 샘플링 및 fixed/dynamic 왼쪽 패딩 확인
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        data_file = Path(tmp_dir) / "interactions.txt"
+        data_file.write_text(
+            "1 2\n1 4\n1 6\n1 8\n1 10\n2 1\n2 3\n3 5\n",
+            encoding="utf-8",
+        )
+        histories = load_sasrec_interactions(data_file)
+        split = split_user_histories(histories)
+
+        # 3개 이상인 사용자 1만 valid/test로 분리되고 나머지는 train에만 남아야 함
+        assert split.train == {1: [2, 4, 6], 2: [1, 3], 3: [5]}
+        assert split.valid == {1: 8}
+        assert split.test == {1: 10}
+        assert split.num_items == 10
+
+        set_seed(0)
+        dataset = SASRecTrainDataset(split.train, num_items=split.num_items, max_len=4)
+        # 이력 길이 1인 사용자 3은 제외되어 2명만 남아야 함
+        assert len(dataset) == 2
+
+        sample_u1 = dataset[0]
+        assert torch.equal(sample_u1[0], torch.tensor([2, 4]))
+        assert torch.equal(sample_u1[1], torch.tensor([4, 6]))
+        assert all(int(neg) not in {2, 4, 6} for neg in sample_u1[2])
+
+        # fixed는 max_len(4), dynamic은 배치 최장 길이(2)로 왼쪽 패딩되어야 함
+        batch_samples = [dataset[0], dataset[1]]
+        fixed_batch = create_sasrec_collate_fn(padding_mode="fixed", max_len=4)(batch_samples)
+        dynamic_batch = create_sasrec_collate_fn(padding_mode="dynamic", max_len=4)(batch_samples)
+        assert fixed_batch[0].shape == (2, 4)
+        assert dynamic_batch[0].shape == (2, 2)
+        assert torch.equal(
+            pad_sequences_left([[3], [1, 2]], padding_mode="dynamic", max_len=4),
+            torch.tensor([[0, 3], [1, 2]]),
+        )
+
+    print("Data & dataset padding test passed")
+
+
+def test_ranking_metrics() -> None:
+    # HR@K, NDCG@K 수식 정확도와 동점 보수적 처리 및 -inf 마스킹 동작 확인
+    ranks = torch.tensor([0, 1, 9, 10])
+    assert math.isclose(hit_rate_at_k(ranks, k=10), 0.75)
+    expected_ndcg = (1.0 + 1.0 / math.log2(3.0) + 1.0 / math.log2(11.0)) / 4.0
+    assert math.isclose(ndcg_at_k(ranks, k=10), expected_ndcg, rel_tol=1e-12)
+
+    # 모든 후보 점수가 같을 때 상수 모델이 HR=1.0을 받지 않아야 함
+    tied_metrics = compute_ranking_metrics(torch.zeros(4, 20), k=10)
+    assert tied_metrics.hr == 0.0 and tied_metrics.ndcg == 0.0
+
+    # Full Ranking에서 이미 소비한 아이템(-inf)은 순위에서 제외되어야 함
+    masked_scores = torch.tensor([[5.0, float("-inf"), 6.0, 2.0]])
+    assert torch.equal(
+        compute_target_ranks(masked_scores, target_indices=torch.tensor([0])),
+        torch.tensor([1]),
+    )
+
+    print("Ranking metrics test passed")
+
+
+def test_training_and_checkpoint() -> None:
+    # 패딩 제외 BCE loss, 1-epoch 학습 갱신, valid/test 평가, 체크포인트 복원을 확인
+    pos_scores = torch.tensor([[50.0, 0.5, -0.3]], requires_grad=True)
+    neg_scores = torch.tensor([[-50.0, -0.2, 0.4]], requires_grad=True)
+    valid_mask = torch.tensor([[False, True, True]])
+    loss = compute_bce_loss(pos_scores, neg_scores, valid_mask)
+    loss.backward()
+    # 패딩 위치(0번 열)는 gradient가 0이어야 함
+    assert pos_scores.grad is not None and pos_scores.grad[0, 0].item() == 0.0
+    assert neg_scores.grad is not None and neg_scores.grad[0, 0].item() == 0.0
+
+    histories = {
+        u: [((u + step) % 12) + 1 for step in range(6)]
+        for u in range(1, 7)
+    }
+    split = split_user_histories(histories)
+    dataset = SASRecTrainDataset(split.train, num_items=split.num_items, max_len=4)
+    loader = DataLoader(
+        dataset,
+        batch_size=3,
+        shuffle=False,
+        collate_fn=create_sasrec_collate_fn(padding_mode="dynamic", max_len=4),
+    )
+
+    for variant in ("paper", "author"):
+        set_seed(7)
+        model = SASRec(
+            num_items=split.num_items,
+            max_len=4,
+            hidden_dim=16,
+            num_blocks=2,
+            num_heads=1,
+            dropout=0.0,
+            block_variant=variant,
+        )
+        optimizer = create_sasrec_optimizer(model, lr=5e-3)
+        before = model.item_embedding.weight[1:].detach().clone()
+
+        epoch_loss = train_epoch(model, loader, optimizer, "cpu", show_progress=False)
+        assert epoch_loss > 0.0
+        assert not torch.equal(model.item_embedding.weight[1:], before)
+        assert torch.all(model.item_embedding.weight[0] == 0.0)
+
+        # Sampled 평가와 Full Ranking 평가에서 fixed/dynamic 결과가 일치해야 함
+        val_dyn = evaluate(
+            model,
+            split,
+            "cpu",
+            mode="valid",
+            k=5,
+            num_negatives=5,
+            padding_mode="dynamic",
+            seed=0,
+            show_progress=False,
+        )
+        val_fix = evaluate(
+            model,
+            split,
+            "cpu",
+            mode="valid",
+            k=5,
+            num_negatives=5,
+            padding_mode="fixed",
+            seed=0,
+            show_progress=False,
+        )
+        test_full = evaluate(
+            model,
+            split,
+            "cpu",
+            mode="test",
+            k=5,
+            num_negatives=None,
+            show_progress=False,
+        )
+        assert val_dyn == val_fix
+        assert 0.0 <= test_full.hr <= 1.0 and 0.0 <= test_full.ndcg <= 1.0
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_path = Path(tmp_dir) / "best.pt"
+            save_training_checkpoint(
+                ckpt_path,
+                model,
+                optimizer,
+                epoch=1,
+                train_loss=epoch_loss,
+                valid_metrics=val_dyn,
+            )
+            reloaded = load_model_checkpoint(ckpt_path, device="cpu")
+            assert extract_model_config(reloaded) == extract_model_config(model)
+            probe = torch.tensor([[0, 1, 2, 3]])
+            assert torch.equal(reloaded(probe), model(probe))
+
+    print("Training & checkpoint test passed")
+
+
 if __name__ == "__main__":
     test_attention_mask()
     test_block_padding_isolation_and_need_weights()
     test_sasrec_padding_forward_backward_no_nan()
+    test_sasrec_model_contracts()
+    test_data_and_dataset_padding()
+    test_ranking_metrics()
+    test_training_and_checkpoint()
