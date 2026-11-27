@@ -9,6 +9,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 from torch.optim import Adam, Optimizer
+from tqdm.auto import tqdm
 
 from .data import InteractionSplit
 from .dataset import PaddingMode, SASRecBatch, pad_sequences_left
@@ -80,6 +81,7 @@ def train_epoch(
     device: torch.device | str,
     *,
     l2_emb: float = 0.0,
+    show_progress: bool = True,
 ) -> float:
     """한 epoch 동안 SASRec을 학습하고 유효 위치 기준 평균 loss 반환"""
     if l2_emb < 0.0:
@@ -91,7 +93,13 @@ def train_epoch(
     total_positions = 0
     steps = 0
 
-    for input_ids, positive_ids, negative_ids in batches:
+    progress = tqdm(
+        batches,
+        desc="Training",
+        leave=False,
+        disable=not show_progress,
+    )
+    for input_ids, positive_ids, negative_ids in progress:
         # (B, S), (B, S), (B, S)
         input_ids = input_ids.to(device)
         positive_ids = positive_ids.to(device)
@@ -132,6 +140,10 @@ def train_epoch(
         # => valid_count(평균을 계산할 때 나눴던 데이터 개수)를 다시 곱해서 원래 손실 총합을 복원
         total_loss += loss.item() * valid_count
         total_positions += valid_count
+        progress.set_postfix(
+            loss=f"{total_loss / total_positions:.4f}",
+            refresh=False,
+        )
 
     if steps == 0:
         raise RuntimeError("유효한 학습 배치가 생성되지 않음")
@@ -182,6 +194,7 @@ def evaluate(
     padding_mode: PaddingMode = "dynamic",
     seed: int = 0,
     max_users: int | None = None,
+    show_progress: bool = True,
 ) -> RankingMetrics:
     """validation 또는 test 분할에 대해 HR@K와 NDCG@K 계산
        Leave-One-Out >> 사용자별 마지막 아이템은 테스트, 직전 아이템은 검증, 나머지는 학습에 사용
@@ -259,7 +272,13 @@ def evaluate(
             else None # Sampled Ranking
         )
 
-        for start in range(0, len(eval_entries), batch_size):
+        progress = tqdm(
+            range(0, len(eval_entries), batch_size),
+            desc=f"Evaluating ({mode})",
+            leave=False,
+            disable=not show_progress,
+        )
+        for start in progress:
             batch_entries = eval_entries[start : start + batch_size]
             sequences = [entry[0] for entry in batch_entries]
 
