@@ -352,6 +352,10 @@ def main() -> None:
                     f"time={elapsed_sec:.2f}s"
                 )
 
+            if writer is not None:
+                # Colab Google Drive 등 버퍼/지연 환경에서도 epoch별 TensorBoard 곡선이 바로 갱신되도록 flush
+                writer.flush()
+
             history.append(record)
 
         save_training_checkpoint(
