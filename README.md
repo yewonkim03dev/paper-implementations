@@ -9,6 +9,7 @@
 | 논문                      | 상태      |
 | ------------------------- | --------- |
 | Attention Is All You Need | 구현 완료 |
+| SASRec                    | 구현 완료 |
 
 ## Workflow
 
@@ -31,7 +32,8 @@ paper-implementations/
 ├── .venv/                         # 로컬 공용 가상환경 (Git 제외)
 ├── requirements.txt               # 공통 dependency
 ├── templates/                     # 새 구현을 시작할 때 복사할 기본 구조
-└── attention-is-all-you-need/     # 첫 번째 논문 구현
+├── attention-is-all-you-need/     # Transformer 구현
+└── sasrec/                        # SASRec 구현
 ```
 
 각 논문 디렉터리에는 모델 코드와 로컬 테스트, 학습 코드, Colab notebook, README를 함께 둡니다. 새로운 논문을 구현할 때는 `templates/`를 복사해서 시작합니다.
