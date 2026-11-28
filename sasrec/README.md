@@ -87,15 +87,15 @@ tensorboard --logdir outputs
 
 두 블록 변형의 차이를 분리해 보기 위해 아래 4가지 구조 차이만 독립 변인으로 두고 나머지 학습 및 평가 조건은 동일하게 통제했습니다.
 
-- 독립 변인 (`--block-variant`)
-  - Attention `LayerNorm` 대상: Q, K, V 전체(`paper`) vs Q만(`author`)
-  - Residual 기준 텐서: 정규화 전 입력(`paper`) vs 정규화 후 입력(`author`)
-  - Dropout 위치: Attention과 FFN 출력 후 각 1회(`paper`) vs Attention weight 내부와 FFN ReLU 및 출력 후(`author`)
-  - Item embedding 스케일링: 미적용(`paper`) vs `sqrt(hidden_dim)` 곱셈(`author`)
+- 독립 변인 (`--block-variant`, [`SASRec.__init__`](src/model.py#L189-L199))
+  - Attention `LayerNorm` 대상: Q, K, V 전체([`PaperSASRecBlock.forward`](src/model.py#L80-L85)) vs Q만([`AuthorSASRecBlock.forward`](src/model.py#L143-L148))
+  - Residual 기준 텐서: 정규화 전 입력([`PaperSASRecBlock.forward`](src/model.py#L87-L95)) vs 정규화 후 입력([`AuthorSASRecBlock.forward`](src/model.py#L150-L155))
+  - Dropout 위치: Attention과 FFN 출력 후 각 1회([`PaperSASRecBlock.__init__`](src/model.py#L54-L68)) vs Attention weight 내부와 FFN ReLU 및 출력 후([`AuthorSASRecBlock.__init__`](src/model.py#L118-L131))
+  - Item embedding 스케일링: 미적용(`paper`) vs `sqrt(hidden_dim)` 곱셈(`author`) ([`SASRec.forward`](src/model.py#L240-L242))
 - 공통 통제 변인
-  - `hidden_dim=50`, `num_blocks=2`, `num_heads=1`, `LayerNorm eps=1e-8`
-  - 가중치 초기화: `Embedding`, `Linear`, `MultiheadAttention`에 `xavier_uniform_` 및 `bias=0` 적용, `padding_idx=0` 행은 0 유지
-  - `epochs=200`, `batch_size=128`, Adam(`lr=1e-3`, `betas=(0.9, 0.98)`), `l2_emb=0.0`, `padding_mode="fixed"`, `eval_interval=20`, `seed=42`
+  - `hidden_dim=50`, `num_blocks=2`, `num_heads=1`, `LayerNorm eps=1e-8` ([`SASRec.__init__`](src/model.py#L164-L202), [`parse_args`](train.py#L294-L299))
+  - 가중치 초기화: `Embedding`, `Linear`, `MultiheadAttention`에 `xavier_uniform_` 및 `bias=0` 적용, `padding_idx=0` 행은 0 유지 ([`SASRec._init_weights`](src/model.py#L208-L223))
+  - `epochs=200`, `batch_size=128`, Adam(`lr=1e-3`, `betas=(0.9, 0.98)`), `l2_emb=0.0`, `padding_mode="fixed"`, `eval_interval=20`, `seed=42` ([`create_sasrec_optimizer`](src/training.py#L29-L37), [`parse_args`](train.py#L282-L322))
 
 ## 실험 결과
 
@@ -103,42 +103,42 @@ Colab T4 GPU에서 원논문과 동일한 4개 벤치마크(`ML-1M`, `Steam`, `V
 
 ### 데이터셋 특성 및 논문 하이퍼파라미터
 
-| 데이터셋 | 파일명 | Users | Items | Interactions | 사용자당 평균 | 아이템당 평균 | 희소도 | `max_len` | `dropout` | 평가 대상 |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | :---: | :---: | :---: |
-| ML-1M | `ml-1m.txt` | 6,040 | 3,416 | 999,611 | 165.5 | 292.6 | 95.16% | 200 | 0.2 | 전체 |
-| Steam | `Steam.txt` | 334,730 | 13,047 | 3,686,172 | 11.0 | 282.5 | 99.92% | 50 | 0.5 | 10,000명 |
-| Video (Games) | `Video.txt` | 31,013 | 23,715 | 287,107 | 9.3 | 12.1 | 99.96% | 50 | 0.5 | 전체 |
-| Beauty | `Beauty.txt` | 52,204 | 57,289 | 394,908 | 7.6 | 6.9 | 99.99% | 50 | 0.5 | 전체 |
+| 데이터셋      | 파일명         |   Users |  Items | Interactions | 사용자당 평균 | 아이템당 평균 | 희소도 | `max_len` | `dropout` | 평가 대상 |
+| ------------- | -------------- | ------: | -----: | -----------: | ------------: | ------------: | -----: | :---------: | :---------: | :-------: |
+| ML-1M         | `ml-1m.txt`  |   6,040 |  3,416 |      999,611 |         165.5 |         292.6 | 95.16% |     200     |     0.2     |   전체   |
+| Steam         | `Steam.txt`  | 334,730 | 13,047 |    3,686,172 |          11.0 |         282.5 | 99.92% |     50     |     0.5     | 10,000명 |
+| Video (Games) | `Video.txt`  |  31,013 | 23,715 |      287,107 |           9.3 |          12.1 | 99.96% |     50     |     0.5     |   전체   |
+| Beauty        | `Beauty.txt` |  52,204 | 57,289 |      394,908 |           7.6 |           6.9 | 99.99% |     50     |     0.5     |   전체   |
 
 ### 100-Sampled 테스트 평가 (원논문 Table III 비교)
 
 원논문 평가 방식과 동일하게 정답 1개와 무작위 미관측 negative 100개를 대상으로 `HR@10`과 `NDCG@10`을 측정했습니다.
 
-| 데이터셋 | 모델 | Best Epoch | Valid HR@10 | Valid NDCG@10 | Test HR@10 | Test NDCG@10 |
-| --- | --- | :---: | ---: | ---: | ---: | ---: |
-| ML-1M | 원논문 (Table III) | - | - | - | 0.8245 | 0.5905 |
-| ML-1M | `paper` | 200 | 0.8439 | 0.6155 | 0.8175 | 0.5950 |
-| ML-1M | `author` | 180 | 0.8445 | 0.6138 | 0.8197 | 0.5895 |
-| Steam | 원논문 (Table III) | - | - | - | 0.8729 | 0.6306 |
-| Steam | `paper` | 200 | 0.8649 | 0.6134 | 0.8588 | 0.6134 |
-| Steam | `author` | 140 | 0.8703 | 0.6218 | 0.8722 | 0.6274 |
-| Video (Games) | 원논문 (Table III) | - | - | - | 0.7410 | 0.5360 |
-| Video (Games) | `paper` | 200 | 0.7633 | 0.5459 | 0.7313 | 0.5173 |
-| Video (Games) | `author` | 180 | 0.7687 | 0.5637 | 0.7409 | 0.5375 |
-| Beauty | 원논문 (Table III) | - | - | - | 0.4854 | 0.3219 |
-| Beauty | `paper` | 200 | 0.4594 | 0.2848 | 0.4345 | 0.2659 |
-| Beauty | `author` | 200 | 0.5145 | 0.3455 | 0.4798 | 0.3183 |
+| 데이터셋      | 모델               | Best Epoch | Valid HR@10 | Valid NDCG@10 | Test HR@10 | Test NDCG@10 |
+| ------------- | ------------------ | :--------: | ----------: | ------------: | ---------: | -----------: |
+| ML-1M         | 원논문 (Table III) |     -     |           - |             - |     0.8245 |       0.5905 |
+| ML-1M         | `paper`          |    200    |      0.8439 |        0.6155 |     0.8175 |       0.5950 |
+| ML-1M         | `author`         |    180    |      0.8445 |        0.6138 |     0.8197 |       0.5895 |
+| Steam         | 원논문 (Table III) |     -     |           - |             - |     0.8729 |       0.6306 |
+| Steam         | `paper`          |    200    |      0.8649 |        0.6134 |     0.8588 |       0.6134 |
+| Steam         | `author`         |    140    |      0.8703 |        0.6218 |     0.8722 |       0.6274 |
+| Video (Games) | 원논문 (Table III) |     -     |           - |             - |     0.7410 |       0.5360 |
+| Video (Games) | `paper`          |    200    |      0.7633 |        0.5459 |     0.7313 |       0.5173 |
+| Video (Games) | `author`         |    180    |      0.7687 |        0.5637 |     0.7409 |       0.5375 |
+| Beauty        | 원논문 (Table III) |     -     |           - |             - |     0.4854 |       0.3219 |
+| Beauty        | `paper`          |    200    |      0.4594 |        0.2848 |     0.4345 |       0.2659 |
+| Beauty        | `author`         |    200    |      0.5145 |        0.3455 |     0.4798 |       0.3183 |
 
 ### Full Ranking 테스트 교차 평가
 
 무작위 negative 샘플링의 분산을 제거하고 전체 미관측 아이템 기준 순위 품질을 확인하기 위해, 각 실험의 `best.pt`로 Full Ranking(`num_negatives=None`)을 추가로 평가했습니다.
 
-| 데이터셋 | 아이템당 평균 상호작용 | `paper` HR@10 | `author` HR@10 | HR@10 상대 차이 | `paper` NDCG@10 | `author` NDCG@10 | NDCG@10 상대 차이 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| ML-1M | 292.6 | 0.2437 | 0.2444 | +0.3% | 0.1294 | 0.1280 | -1.1% |
-| Steam | 282.5 | 0.1160 | 0.1211 | +4.4% | 0.0580 | 0.0635 | +9.5% |
-| Video (Games) | 12.1 | 0.0589 | 0.0702 | +19.2% | 0.0293 | 0.0346 | +18.1% |
-| Beauty | 6.9 | 0.0073 | 0.0184 | +152.1% | 0.0034 | 0.0091 | +167.6% |
+| 데이터셋      | 아이템당 평균 상호작용 | `paper` HR@10 | `author` HR@10 | HR@10 상대 차이 | `paper` NDCG@10 | `author` NDCG@10 | NDCG@10 상대 차이 |
+| ------------- | ---------------------: | --------------: | ---------------: | --------------: | ----------------: | -----------------: | ----------------: |
+| ML-1M         |                  292.6 |          0.2437 |           0.2444 |           +0.3% |            0.1294 |             0.1280 |             -1.1% |
+| Steam         |                  282.5 |          0.1160 |           0.1211 |           +4.4% |            0.0580 |             0.0635 |             +9.5% |
+| Video (Games) |                   12.1 |          0.0589 |           0.0702 |          +19.2% |            0.0293 |             0.0346 |            +18.1% |
+| Beauty        |                    6.9 |          0.0073 |           0.0184 |         +152.1% |            0.0034 |             0.0091 |           +167.6% |
 
 ### 학습 곡선
 
