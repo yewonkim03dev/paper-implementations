@@ -1,6 +1,7 @@
 """Training and evaluation helpers."""
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 import random
 from typing import Any, Literal
@@ -374,6 +375,87 @@ def extract_model_config(model: SASRec) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class TrainingResumeState:
+    """체크포인트에서 복원된 학습 진행 상태"""
+
+    epoch: int
+    train_loss: float
+    valid_metrics: RankingMetrics | None
+    best_epoch: int
+    best_valid_hr: float
+    best_valid_ndcg: float
+    history: list[dict[str, Any]]
+    rng_restored: bool
+
+
+def _serialize_ranking_metrics(
+    metrics: RankingMetrics | None,
+) -> dict[str, float | int] | None:
+    if metrics is None:
+        return None
+    return {
+        "hr": metrics.hr,
+        "ndcg": metrics.ndcg,
+        "k": metrics.k,
+    }
+
+
+def _deserialize_ranking_metrics(
+    payload: dict[str, Any] | None,
+) -> RankingMetrics | None:
+    if payload is None:
+        return None
+    return RankingMetrics(
+        hr=float(payload["hr"]),
+        ndcg=float(payload["ndcg"]),
+        k=int(payload["k"]),
+    )
+
+
+def capture_rng_state(
+    loader_generator: torch.Generator | None = None,
+) -> dict[str, Any]:
+    """재현 가능한 학습 재개를 위해 Python/PyTorch/CUDA 및 DataLoader 난수 상태 수집"""
+    return {
+        "python": random.getstate(),
+        "torch": torch.get_rng_state(),
+        "cuda": (
+            torch.cuda.get_rng_state_all()
+            if torch.cuda.is_available()
+            else None
+        ),
+        "loader_generator": (
+            loader_generator.get_state()
+            if loader_generator is not None
+            else None
+        ),
+    }
+
+
+def restore_rng_state(
+    rng_state: dict[str, Any],
+    loader_generator: torch.Generator | None = None,
+) -> None:
+    """체크포인트에 저장된 난수 상태 복원 (디바이스 환경이 달라진 경우 가능한 범위만 복원)"""
+    if rng_state.get("python") is not None:
+        random.setstate(rng_state["python"])
+    if rng_state.get("torch") is not None:
+        torch.set_rng_state(rng_state["torch"].cpu())
+    cuda_states = rng_state.get("cuda")
+    if (
+        cuda_states is not None
+        and torch.cuda.is_available()
+        and len(cuda_states) == torch.cuda.device_count()
+    ):
+        torch.cuda.set_rng_state_all([state.cpu() for state in cuda_states])
+    if (
+        loader_generator is not None
+        and rng_state.get("loader_generator") is not None
+    ):
+        loader_generator.set_state(rng_state["loader_generator"].cpu())
+
+
 def save_training_checkpoint(
     path: str | Path,
     model: SASRec,
@@ -382,32 +464,116 @@ def save_training_checkpoint(
     epoch: int,
     train_loss: float,
     valid_metrics: RankingMetrics | None = None,
+    best_epoch: int | None = None,
+    best_valid_metrics: RankingMetrics | None = None,
+    history: list[dict[str, Any]] | None = None,
+    run_config: dict[str, Any] | None = None,
+    rng_state: dict[str, Any] | None = None,
 ) -> None:
-    """모델 설정, 가중치, 옵티마이저 상태와 검증 지표를 체크포인트로 저장"""
+    """모델/옵티마이저 상태, 실험 설정, 난수 상태와 진행 기록을 원자적으로 체크포인트 저장"""
     if epoch < 1:
         raise ValueError(f"epoch은 1 이상이어야 함: {epoch}")
+    if best_epoch is not None and best_epoch < 0:
+        raise ValueError(f"best_epoch은 0 이상이어야 함: {best_epoch}")
 
     checkpoint_path = Path(path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    # 저장 도중 세션이 끊겨도 기존 체크포인트가 손상되지 않도록 임시 파일 후 원자적 교체
+    temp_path = checkpoint_path.with_name(f"{checkpoint_path.name}.tmp")
+    payload = {
+        "epoch": epoch,
+        "train_loss": train_loss,
+        "valid_metrics": _serialize_ranking_metrics(valid_metrics),
+        "best_epoch": best_epoch,
+        "best_valid_metrics": _serialize_ranking_metrics(best_valid_metrics),
+        "history": [dict(row) for row in history] if history is not None else None,
+        "run_config": dict(run_config) if run_config is not None else None,
+        "rng_state": rng_state,
+        "model_config": extract_model_config(model),
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+    }
 
-    torch.save(
-        {
-            "epoch": epoch,
-            "train_loss": train_loss,
-            "valid_metrics": (
-                {
-                    "hr": valid_metrics.hr,
-                    "ndcg": valid_metrics.ndcg,
-                    "k": valid_metrics.k,
-                }
-                if valid_metrics is not None
-                else None
-            ),
-            "model_config": extract_model_config(model),
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-        },
-        checkpoint_path,
+    try:
+        torch.save(payload, temp_path)
+        temp_path.replace(checkpoint_path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def load_training_checkpoint(
+    path: str | Path,
+    model: SASRec,
+    optimizer: Optimizer,
+    *,
+    expected_run_config: dict[str, Any] | None = None,
+    loader_generator: torch.Generator | None = None,
+) -> TrainingResumeState:
+    """저장된 체크포인트에서 모델/옵티마이저/난수 상태와 학습 진행 기록을 검증 후 복원"""
+    # CPU로 먼저 로드해야 Adam step 스칼라와 ByteTensor 난수 상태가 안전하게 복원됨
+    checkpoint = torch.load(Path(path), map_location="cpu", weights_only=True)
+
+    saved_config = checkpoint.get("model_config")
+    current_config = extract_model_config(model)
+    if saved_config is not None and saved_config != current_config:
+        raise ValueError(
+            "체크포인트의 모델 설정이 현재 모델과 일치하지 않음: "
+            f"checkpoint={saved_config} vs current={current_config}"
+        )
+
+    saved_run_config = checkpoint.get("run_config")
+    if saved_run_config is not None and expected_run_config is not None:
+        all_keys = sorted(set(saved_run_config) | set(expected_run_config))
+        mismatches = {
+            key: (saved_run_config.get(key), expected_run_config.get(key))
+            for key in all_keys
+            if saved_run_config.get(key) != expected_run_config.get(key)
+        }
+        if mismatches:
+            raise ValueError(
+                "체크포인트의 실험 설정이 현재 실행 설정과 일치하지 않음 "
+                f"(checkpoint vs current): {mismatches}"
+            )
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    rng_restored = False
+    saved_rng_state = checkpoint.get("rng_state")
+    if isinstance(saved_rng_state, dict):
+        restore_rng_state(saved_rng_state, loader_generator=loader_generator)
+        rng_restored = True
+
+    epoch = int(checkpoint["epoch"])
+    train_loss = float(checkpoint["train_loss"])
+    valid_metrics = _deserialize_ranking_metrics(checkpoint.get("valid_metrics"))
+
+    best_valid = checkpoint.get("best_valid_metrics")
+    if best_valid is None and checkpoint.get("best_epoch") is None:
+        # 이전 형식 체크포인트(best.pt 등) 호환용 fallback
+        best_valid = checkpoint.get("valid_metrics")
+
+    if checkpoint.get("best_epoch") is not None:
+        best_epoch = int(checkpoint["best_epoch"])
+    elif best_valid is not None:
+        best_epoch = epoch
+    else:
+        best_epoch = 0
+
+    best_valid_hr = float(best_valid["hr"]) if best_valid is not None else -1.0
+    best_valid_ndcg = float(best_valid["ndcg"]) if best_valid is not None else -1.0
+    history = [dict(row) for row in (checkpoint.get("history") or [])]
+
+    return TrainingResumeState(
+        epoch=epoch,
+        train_loss=train_loss,
+        valid_metrics=valid_metrics,
+        best_epoch=best_epoch,
+        best_valid_hr=best_valid_hr,
+        best_valid_ndcg=best_valid_ndcg,
+        history=history,
+        rng_restored=rng_restored,
     )
 
 

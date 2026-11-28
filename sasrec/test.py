@@ -26,11 +26,14 @@ from src.model import (
     _build_attention_mask,
 )
 from src.training import (
+    TrainingResumeState,
+    capture_rng_state,
     compute_bce_loss,
     create_sasrec_optimizer,
     evaluate,
     extract_model_config,
     load_model_checkpoint,
+    load_training_checkpoint,
     save_training_checkpoint,
     set_seed,
     train_epoch,
@@ -360,7 +363,17 @@ def test_training_and_checkpoint() -> None:
         assert 0.0 <= test_full.hr <= 1.0 and 0.0 <= test_full.ndcg <= 1.0
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            ckpt_path = Path(tmp_dir) / "best.pt"
+            ckpt_path = Path(tmp_dir) / "last.pt"
+            sample_history = [
+                {
+                    "epoch": 1,
+                    "train_loss": epoch_loss,
+                    "elapsed_sec": 0.1,
+                    "valid_hr": val_dyn.hr,
+                    "valid_ndcg": val_dyn.ndcg,
+                }
+            ]
+            run_config = {"lr": 5e-3, "eval_k": 5, "padding_mode": "dynamic"}
             save_training_checkpoint(
                 ckpt_path,
                 model,
@@ -368,11 +381,157 @@ def test_training_and_checkpoint() -> None:
                 epoch=1,
                 train_loss=epoch_loss,
                 valid_metrics=val_dyn,
+                best_epoch=1,
+                best_valid_metrics=val_dyn,
+                history=sample_history,
+                run_config=run_config,
             )
             reloaded = load_model_checkpoint(ckpt_path, device="cpu")
             assert extract_model_config(reloaded) == extract_model_config(model)
             probe = torch.tensor([[0, 1, 2, 3]])
             assert torch.equal(reloaded(probe), model(probe))
+
+            # 학습 재개용 체크포인트 복원(모델·옵티마이저 상태·진행 기록·설정 검증) 확인
+            resumed_model = SASRec(
+                num_items=split.num_items,
+                max_len=4,
+                hidden_dim=16,
+                num_blocks=2,
+                num_heads=1,
+                dropout=0.0,
+                block_variant=variant,
+            )
+            resumed_optimizer = create_sasrec_optimizer(resumed_model, lr=5e-3)
+            resume_state = load_training_checkpoint(
+                ckpt_path,
+                resumed_model,
+                resumed_optimizer,
+                expected_run_config=run_config,
+            )
+            assert resume_state == TrainingResumeState(
+                epoch=1,
+                train_loss=epoch_loss,
+                valid_metrics=val_dyn,
+                best_epoch=1,
+                best_valid_hr=val_dyn.hr,
+                best_valid_ndcg=val_dyn.ndcg,
+                history=sample_history,
+                rng_restored=False,
+            )
+            resumed_model.eval()
+            model.eval()
+            assert torch.equal(resumed_model(probe), model(probe))
+            assert len(resumed_optimizer.state) == len(optimizer.state)
+
+            # 실험 설정 불일치 시 ValueError를 발생시켜야 함
+            try:
+                load_training_checkpoint(
+                    ckpt_path,
+                    resumed_model,
+                    resumed_optimizer,
+                    expected_run_config={"lr": 1e-3, "eval_k": 5, "padding_mode": "dynamic"},
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Expected ValueError for mismatched run_config")
+
+            # 모델 구조가 다른 체크포인트로 복원 시 ValueError를 발생시켜야 함
+            wrong_model = SASRec(
+                num_items=split.num_items,
+                max_len=4,
+                hidden_dim=8,
+                num_blocks=2,
+                num_heads=1,
+                dropout=0.0,
+                block_variant=variant,
+            )
+            wrong_optimizer = create_sasrec_optimizer(wrong_model, lr=5e-3)
+            try:
+                load_training_checkpoint(ckpt_path, wrong_model, wrong_optimizer)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Expected ValueError for mismatched model_config")
+
+            # 난수 상태(RNG) 저장/복원 시 연속 2-epoch 학습과 중단 후 재개 학습이 정확히 일치해야 함
+            def make_shuffled_loader(gen: torch.Generator) -> DataLoader:
+                return DataLoader(
+                    dataset,
+                    batch_size=3,
+                    shuffle=True,
+                    collate_fn=create_sasrec_collate_fn(
+                        padding_mode="dynamic",
+                        max_len=4,
+                    ),
+                    generator=gen,
+                )
+
+            set_seed(99)
+            gen_cont = torch.Generator().manual_seed(99)
+            loader_cont = make_shuffled_loader(gen_cont)
+            model_cont = SASRec(
+                num_items=split.num_items,
+                max_len=4,
+                hidden_dim=16,
+                num_blocks=2,
+                num_heads=1,
+                dropout=0.2,
+                block_variant=variant,
+            )
+            opt_cont = create_sasrec_optimizer(model_cont, lr=5e-3)
+            loss_cont_1 = train_epoch(model_cont, loader_cont, opt_cont, "cpu", show_progress=False)
+            loss_cont_2 = train_epoch(model_cont, loader_cont, opt_cont, "cpu", show_progress=False)
+
+            rng_ckpt_path = Path(tmp_dir) / "rng_last.pt"
+            set_seed(99)
+            gen_part1 = torch.Generator().manual_seed(99)
+            loader_part1 = make_shuffled_loader(gen_part1)
+            model_part1 = SASRec(
+                num_items=split.num_items,
+                max_len=4,
+                hidden_dim=16,
+                num_blocks=2,
+                num_heads=1,
+                dropout=0.2,
+                block_variant=variant,
+            )
+            opt_part1 = create_sasrec_optimizer(model_part1, lr=5e-3)
+            loss_part1 = train_epoch(model_part1, loader_part1, opt_part1, "cpu", show_progress=False)
+            assert loss_part1 == loss_cont_1
+            save_training_checkpoint(
+                rng_ckpt_path,
+                model_part1,
+                opt_part1,
+                epoch=1,
+                train_loss=loss_part1,
+                rng_state=capture_rng_state(gen_part1),
+            )
+
+            set_seed(0)
+            gen_part2 = torch.Generator().manual_seed(0)
+            loader_part2 = make_shuffled_loader(gen_part2)
+            model_part2 = SASRec(
+                num_items=split.num_items,
+                max_len=4,
+                hidden_dim=16,
+                num_blocks=2,
+                num_heads=1,
+                dropout=0.2,
+                block_variant=variant,
+            )
+            opt_part2 = create_sasrec_optimizer(model_part2, lr=5e-3)
+            rng_resume = load_training_checkpoint(
+                rng_ckpt_path,
+                model_part2,
+                opt_part2,
+                loader_generator=gen_part2,
+            )
+            assert rng_resume.rng_restored is True
+            loss_part2 = train_epoch(model_part2, loader_part2, opt_part2, "cpu", show_progress=False)
+            assert math.isclose(loss_part2, loss_cont_2, rel_tol=0.0, abs_tol=1e-12)
+            for p_cont, p_res in zip(model_cont.parameters(), model_part2.parameters()):
+                assert torch.equal(p_cont, p_res)
 
     print("Training & checkpoint test passed")
 
